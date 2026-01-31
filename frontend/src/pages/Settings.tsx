@@ -45,6 +45,8 @@ import {
   useUpdateDurationSettings,
   useUpdateDisplaySettings,
   useUpdateReconciliationSettings,
+  useStreamFilterSettings,
+  useUpdateStreamFilterSettings,
   useTeamFilterSettings,
   useUpdateTeamFilterSettings,
   useExceptionKeywords,
@@ -63,7 +65,7 @@ import { StreamOrderingManager } from "@/components/StreamOrderingManager"
 import { getLeagues, getSports } from "@/api/teams"
 import { downloadBackup, restoreBackup } from "@/api/backup"
 import { useQuery } from "@tanstack/react-query"
-import { useCacheStatus, useRefreshCache, useGameDataCacheStats, useClearGameDataCache } from "@/hooks/useEPG"
+import { useCacheStatus, useRefreshCache } from "@/hooks/useEPG"
 import { useDateFormat } from "@/hooks/useDateFormat"
 import type {
   DispatcharrSettings,
@@ -73,6 +75,7 @@ import type {
   DurationSettings,
   DisplaySettings,
   ReconciliationSettings,
+  StreamFilterSettings,
   TeamFilterSettings,
   ChannelNumberingSettings,
   UpdateCheckSettings,
@@ -124,10 +127,10 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "teams", label: "Teams" },
   { id: "events", label: "Event Groups" },
-  { id: "epg", label: "EPG" },
-  { id: "channels", label: "Channels" },
+  { id: "channels", label: "Channel Management" },
+  { id: "epg", label: "EPG Generation" },
   { id: "integrations", label: "Dispatcharr" },
-  { id: "advanced", label: "System" },
+  { id: "advanced", label: "Advanced" },
 ]
 
 export function Settings() {
@@ -150,8 +153,6 @@ export function Settings() {
   const schedulerStatus = useSchedulerStatus()
   const { data: cacheStatus, refetch: refetchCache } = useCacheStatus()
   const refreshCacheMutation = useRefreshCache()
-  const { data: gameDataCacheStats } = useGameDataCacheStats()
-  const clearGameDataCacheMutation = useClearGameDataCache()
   const { startGeneration, isGenerating } = useGenerationProgress()
 
   const updateDispatcharr = useUpdateDispatcharrSettings()
@@ -162,6 +163,8 @@ export function Settings() {
   const updateDurations = useUpdateDurationSettings()
   const updateDisplay = useUpdateDisplaySettings()
   const updateReconciliation = useUpdateReconciliationSettings()
+  const { data: streamFilterData } = useStreamFilterSettings()
+  const updateStreamFilter = useUpdateStreamFilterSettings()
 
   // Exception keywords
   const keywordsQuery = useExceptionKeywords()
@@ -204,6 +207,7 @@ export function Settings() {
   const [durations, setDurations] = useState<DurationSettings | null>(null)
   const [display, setDisplay] = useState<DisplaySettings | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationSettings | null>(null)
+  const [streamFilter, setStreamFilter] = useState<StreamFilterSettings | null>(null)
   const [teamFilter, setTeamFilter] = useState<TeamFilterSettings>({
     enabled: true,
     include_teams: null,
@@ -287,6 +291,13 @@ export function Settings() {
     }
   }, [updateCheckData])
 
+  // Sync stream filter settings when data loads
+  useEffect(() => {
+    if (streamFilterData) {
+      setStreamFilter(streamFilterData)
+    }
+  }, [streamFilterData])
+
   // Sync channel range inputs from lifecycle on initial load only
   const channelRangeInitializedRef = useRef(false)
   useEffect(() => {
@@ -339,6 +350,21 @@ export function Settings() {
       }
       await updateDispatcharr.mutateAsync(data)
       toast.success("Dispatcharr settings saved")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save")
+    }
+  }
+
+  const handleSaveStreamFilter = async () => {
+    if (!streamFilter) {
+      return
+    }
+
+    try {
+      await updateStreamFilter.mutateAsync({
+        require_event_pattern: streamFilter.require_event_pattern,
+      })
+      toast.success("Stream filter settings saved")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save")
     }
@@ -580,7 +606,7 @@ export function Settings() {
       </div>
       <Card>
         <CardHeader>
-          <CardTitle>Display Settings</CardTitle>
+          <CardTitle>System Settings</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -692,7 +718,7 @@ export function Settings() {
       </div>
       <Card>
         <CardHeader>
-          <CardTitle>Team EPG Settings</CardTitle>
+          <CardTitle>Channel Settings</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
@@ -1285,7 +1311,7 @@ export function Settings() {
               <label className={`flex flex-col p-3 border-2 cursor-pointer transition-colors rounded-tl-lg ${
                 channelNumbering.numbering_mode === "strict_block"
                   ? "border-primary border-b-0 bg-muted/30 relative z-10"
-                  : "border-border border-b-primary hover:border-muted-foreground/50 bg-background"
+                  : "border-border border-b-primary/20 hover:border-muted-foreground/50 bg-background"
               }`}>
                 <div className="flex items-center gap-2 mb-1">
                   <input
@@ -1310,10 +1336,10 @@ export function Settings() {
               </label>
 
               {/* Rational Block */}
-              <label className={`flex flex-col p-3 border-2 cursor-pointer transition-colors ${
+              <label className={`flex flex-col p-3 border-2 border-l-0 cursor-pointer transition-colors ${
                 channelNumbering.numbering_mode === "rational_block"
-                  ? "border-primary border-b-0 bg-muted/30 relative z-10 -ml-[2px]"
-                  : "border-border border-l-0 border-b-primary hover:border-muted-foreground/50 bg-background"
+                  ? "border-primary border-b-0 bg-muted/30 relative z-10"
+                  : "border-border border-b-primary/20 hover:border-muted-foreground/50 bg-background"
               }`}>
                 <div className="flex items-center gap-2 mb-1">
                   <input
@@ -1337,10 +1363,10 @@ export function Settings() {
               </label>
 
               {/* Strict Compact */}
-              <label className={`flex flex-col p-3 border-2 cursor-pointer transition-colors rounded-tr-lg ${
+              <label className={`flex flex-col p-3 border-2 border-l-0 cursor-pointer transition-colors rounded-tr-lg ${
                 channelNumbering.numbering_mode === "strict_compact"
-                  ? "border-primary border-b-0 bg-muted/30 relative z-10 -ml-[2px]"
-                  : "border-border border-l-0 border-b-primary hover:border-muted-foreground/50 bg-background"
+                  ? "border-primary border-b-0 bg-muted/30 relative z-10"
+                  : "border-border border-b-primary/20 hover:border-muted-foreground/50 bg-background"
               }`}>
                 <div className="flex items-center gap-2 mb-1">
                   <input
@@ -1726,118 +1752,6 @@ export function Settings() {
           </Button>
         </CardContent>
       </Card>
-
-      {/* Scheduled Channel Reset */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Scheduled Channel Reset</CardTitle>
-          <CardDescription>
-            For users experiencing stale channel logos in Jellyfin. Schedule a periodic
-            purge of all Teamarr channels before your media server&apos;s guide refresh.
-            Leave disabled if you&apos;re not having issues.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={scheduler?.channel_reset_enabled ?? false}
-              onCheckedChange={(checked) =>
-                scheduler && setScheduler({ ...scheduler, channel_reset_enabled: checked })
-              }
-            />
-            <Label>Enable Scheduled Channel Reset</Label>
-          </div>
-
-          {scheduler?.channel_reset_enabled && (
-            <>
-              <div className="space-y-2">
-                <Label htmlFor="reset-cron">Reset Schedule (Cron Expression)</Label>
-                <Input
-                  id="reset-cron"
-                  value={scheduler?.channel_reset_cron ?? ""}
-                  onChange={(e) =>
-                    scheduler && setScheduler({ ...scheduler, channel_reset_cron: e.target.value })
-                  }
-                  className="font-mono"
-                  placeholder="30 3 * * *"
-                />
-                <CronPreview expression={scheduler?.channel_reset_cron ?? ""} />
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    scheduler && setScheduler({ ...scheduler, channel_reset_cron: "30 2 * * *" })
-                  }
-                >
-                  Daily 2:30 AM
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    scheduler && setScheduler({ ...scheduler, channel_reset_cron: "30 3 * * *" })
-                  }
-                >
-                  Daily 3:30 AM
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    scheduler && setScheduler({ ...scheduler, channel_reset_cron: "30 4 * * *" })
-                  }
-                >
-                  Daily 4:30 AM
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    scheduler && setScheduler({ ...scheduler, channel_reset_cron: "30 5 * * *" })
-                  }
-                >
-                  Daily 5:30 AM
-                </Button>
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                Set this to run shortly before your media server&apos;s scheduled guide refresh.
-                Channels will be recreated on the next EPG generation.
-              </p>
-            </>
-          )}
-
-          <Button
-            onClick={async () => {
-              if (!scheduler) return
-              try {
-                await updateScheduler.mutateAsync({
-                  channel_reset_enabled: scheduler.channel_reset_enabled,
-                  channel_reset_cron: scheduler.channel_reset_cron,
-                })
-                toast.success("Channel reset settings saved")
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : "Failed to save")
-              }
-            }}
-            disabled={updateScheduler.isPending}
-          >
-            {updateScheduler.isPending ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4 mr-1" />
-            )}
-            Save
-          </Button>
-        </CardContent>
-      </Card>
       </>
       )}
 
@@ -2095,7 +2009,172 @@ export function Settings() {
         <p className="text-sm text-muted-foreground">Advanced configuration options</p>
       </div>
 
-      {/* Update Notifications */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Local Caching
+              </CardTitle>
+              <CardDescription>Cache of teams and leagues from ESPN and TheSportsDB</CardDescription>
+            </div>
+            {cacheStatus?.is_stale && (
+              <Badge variant="warning">Stale</Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-4 gap-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold">{cacheStatus?.leagues_count ?? 0}</div>
+              <div className="text-xs text-muted-foreground">Leagues</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold">{cacheStatus?.teams_count ?? 0}</div>
+              <div className="text-xs text-muted-foreground">Teams</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold">
+                {cacheStatus?.refresh_duration_seconds
+                  ? `${cacheStatus.refresh_duration_seconds.toFixed(1)}s`
+                  : "-"}
+              </div>
+              <div className="text-xs text-muted-foreground">Last Refresh Duration</div>
+            </div>
+            <div className="text-center">
+              <div className="text-sm font-medium">
+                {formatRelativeTime(cacheStatus?.last_refresh ?? null)}
+              </div>
+              <div className="text-xs text-muted-foreground">Last Refresh</div>
+            </div>
+          </div>
+
+          {cacheStatus?.is_empty && (
+            <div className="text-center py-2 text-muted-foreground">
+              Cache is empty. Refresh to populate with teams and leagues.
+            </div>
+          )}
+
+          {cacheStatus?.last_error && (
+            <div className="text-sm text-destructive">
+              Last error: {cacheStatus.last_error}
+            </div>
+          )}
+
+          <Button
+            onClick={handleRefreshCache}
+            disabled={refreshCacheMutation.isPending || cacheStatus?.refresh_in_progress}
+            className="w-full"
+          >
+            {(refreshCacheMutation.isPending || cacheStatus?.refresh_in_progress) && (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            )}
+            {cacheStatus?.refresh_in_progress ? "Refreshing..." : "Refresh Cache"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Stream Filtering</CardTitle>
+          <CardDescription>Global defaults for event group stream filtering</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={streamFilter?.require_event_pattern ?? true}
+              onCheckedChange={(checked) =>
+                streamFilter && setStreamFilter({ ...streamFilter, require_event_pattern: checked })
+              }
+              disabled={!streamFilter}
+            />
+            <Label>Require event pattern in stream names</Label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            When enabled, streams must include an event pattern (vs/@/date/time).
+            Group-level "Skip built-in stream filtering" bypasses this rule.
+          </p>
+          <Button onClick={handleSaveStreamFilter} disabled={!streamFilter || updateStreamFilter.isPending}>
+            {updateStreamFilter.isPending ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-1" />
+            )}
+            Save
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>TheSportsDB API Key</CardTitle>
+          <CardDescription>Optional premium API key for higher rate limits</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="tsdb-api-key">API Key</Label>
+            <Input
+              id="tsdb-api-key"
+              type="password"
+              value={display?.tsdb_api_key ?? ""}
+              onChange={(e) => display && setDisplay({ ...display, tsdb_api_key: e.target.value })}
+              placeholder="Leave blank to use free tier"
+            />
+            <p className="text-xs text-muted-foreground">
+              Premium key ($9/mo) gives higher rate limits. Free tier works for most users.
+              Get a key at <a href="https://www.thesportsdb.com/pricing" target="_blank" rel="noopener noreferrer" className="underline">thesportsdb.com/pricing</a>
+            </p>
+          </div>
+
+          <Button onClick={handleSaveDisplay} disabled={updateDisplay.isPending}>
+            {updateDisplay.isPending ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-1" />
+            )}
+            Save
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>XMLTV Generator Metadata</CardTitle>
+          <CardDescription>Customize XMLTV output file metadata</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="xmltv-name">XMLTV Generator Name</Label>
+              <Input
+                id="xmltv-name"
+                value={display?.xmltv_generator_name ?? "Teamarr"}
+                onChange={(e) => display && setDisplay({ ...display, xmltv_generator_name: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="xmltv-url">XMLTV Generator URL</Label>
+              <Input
+                id="xmltv-url"
+                value={display?.xmltv_generator_url ?? "https://github.com/Pharaoh-Labs/teamarr"}
+                onChange={(e) => display && setDisplay({ ...display, xmltv_generator_url: e.target.value })}
+                placeholder="https://github.com/Pharaoh-Labs/teamarr"
+              />
+            </div>
+          </div>
+
+          <Button onClick={handleSaveDisplay} disabled={updateDisplay.isPending}>
+            {updateDisplay.isPending ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-1" />
+            )}
+            Save
+          </Button>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -2219,7 +2298,6 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      {/* Backup & Restore */}
       <Card>
         <CardHeader>
           <CardTitle>Backup & Restore</CardTitle>
@@ -2272,188 +2350,6 @@ export function Settings() {
               </div>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Data Caches */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Database className="h-5 w-5" />
-                Data Caches
-              </CardTitle>
-              <CardDescription>Team/league directory and cached game data from providers</CardDescription>
-            </div>
-            {cacheStatus?.is_stale && (
-              <Badge variant="warning">Directory Stale</Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-6">
-            {/* Team & League Directory Section */}
-            <div className="space-y-4">
-              <h4 className="text-sm font-medium">Team & League Directory</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="text-center">
-                  <div className="text-2xl font-bold">{cacheStatus?.leagues_count ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Leagues</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold">{cacheStatus?.teams_count ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Teams</div>
-                </div>
-              </div>
-              <div className="text-center text-xs text-muted-foreground">
-                {formatRelativeTime(cacheStatus?.last_refresh ?? null)}
-                {cacheStatus?.refresh_duration_seconds && ` (${cacheStatus.refresh_duration_seconds.toFixed(1)}s)`}
-              </div>
-
-              {cacheStatus?.is_empty && (
-                <div className="text-center py-2 text-muted-foreground text-xs">
-                  Empty. Refresh to populate.
-                </div>
-              )}
-
-              {cacheStatus?.last_error && (
-                <div className="text-xs text-destructive">
-                  Error: {cacheStatus.last_error}
-                </div>
-              )}
-
-              <Button
-                onClick={handleRefreshCache}
-                disabled={refreshCacheMutation.isPending || cacheStatus?.refresh_in_progress}
-                className="w-full"
-                size="sm"
-              >
-                {(refreshCacheMutation.isPending || cacheStatus?.refresh_in_progress) && (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                )}
-                {cacheStatus?.refresh_in_progress ? "Refreshing..." : "Refresh Directory"}
-              </Button>
-            </div>
-
-            {/* Game Data Cache Section */}
-            <div className="space-y-4">
-              <h4 className="text-sm font-medium">Game Data Cache</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="text-center">
-                  <div className="text-2xl font-bold">{gameDataCacheStats?.active_entries ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Active Entries</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold">{gameDataCacheStats?.pending_writes ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Pending Writes</div>
-                </div>
-              </div>
-              <div className="text-center text-xs text-muted-foreground">
-                Schedules, scores, and odds
-              </div>
-
-              <div className="rounded-md bg-amber-500/10 border border-amber-500/20 p-2">
-                <div className="flex gap-2">
-                  <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0 mt-0.5" />
-                  <p className="text-xs text-amber-500">
-                    Clear if scores appear incorrect
-                  </p>
-                </div>
-              </div>
-
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => {
-                  clearGameDataCacheMutation.mutate(undefined, {
-                    onSuccess: (data) => toast.success(data.message),
-                    onError: () => toast.error("Failed to clear game data cache"),
-                  })
-                }}
-                disabled={clearGameDataCacheMutation.isPending}
-                className="w-full"
-              >
-                {clearGameDataCacheMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4 mr-2" />
-                )}
-                Clear Game Data Cache
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* TheSportsDB API Key */}
-      <Card>
-        <CardHeader>
-          <CardTitle>TheSportsDB API Key</CardTitle>
-          <CardDescription>Optional premium API key for higher rate limits</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="tsdb-api-key">API Key</Label>
-            <Input
-              id="tsdb-api-key"
-              type="password"
-              value={display?.tsdb_api_key ?? ""}
-              onChange={(e) => display && setDisplay({ ...display, tsdb_api_key: e.target.value })}
-              placeholder="Leave blank to use free tier"
-            />
-            <p className="text-xs text-muted-foreground">
-              Premium key ($9/mo) gives higher rate limits. Free tier works for most users.
-              Get a key at <a href="https://www.thesportsdb.com/pricing" target="_blank" rel="noopener noreferrer" className="underline">thesportsdb.com/pricing</a>
-            </p>
-          </div>
-
-          <Button onClick={handleSaveDisplay} disabled={updateDisplay.isPending}>
-            {updateDisplay.isPending ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4 mr-1" />
-            )}
-            Save
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* XMLTV Generator Metadata */}
-      <Card>
-        <CardHeader>
-          <CardTitle>XMLTV Generator Metadata</CardTitle>
-          <CardDescription>Customize XMLTV output file metadata</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="xmltv-name">XMLTV Generator Name</Label>
-              <Input
-                id="xmltv-name"
-                value={display?.xmltv_generator_name ?? "Teamarr"}
-                onChange={(e) => display && setDisplay({ ...display, xmltv_generator_name: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="xmltv-url">XMLTV Generator URL</Label>
-              <Input
-                id="xmltv-url"
-                value={display?.xmltv_generator_url ?? "https://github.com/Pharaoh-Labs/teamarr"}
-                onChange={(e) => display && setDisplay({ ...display, xmltv_generator_url: e.target.value })}
-                placeholder="https://github.com/Pharaoh-Labs/teamarr"
-              />
-            </div>
-          </div>
-
-          <Button onClick={handleSaveDisplay} disabled={updateDisplay.isPending}>
-            {updateDisplay.isPending ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4 mr-1" />
-            )}
-            Save
-          </Button>
         </CardContent>
       </Card>
       </>
