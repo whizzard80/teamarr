@@ -12,6 +12,10 @@ export interface PatternState {
   custom_regex_time_enabled: boolean
   custom_regex_league: string | null
   custom_regex_league_enabled: boolean
+  custom_regex_fighters: string | null
+  custom_regex_fighters_enabled: boolean
+  custom_regex_event_name: string | null
+  custom_regex_event_name_enabled: boolean
 }
 
 export const EMPTY_PATTERNS: PatternState = {
@@ -28,4 +32,8 @@ export const EMPTY_PATTERNS: PatternState = {
   custom_regex_time_enabled: false,
   custom_regex_league: null,
   custom_regex_league_enabled: false,
+  custom_regex_fighters: null,
+  custom_regex_fighters_enabled: false,
+  custom_regex_event_name: null,
+  custom_regex_event_name_enabled: false,
 }
