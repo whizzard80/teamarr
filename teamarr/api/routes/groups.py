@@ -1544,6 +1544,7 @@ class PreviewStreamModel(BaseModel):
 
     stream_id: int
     stream_name: str
+    is_stale: bool = False
     matched: bool
     event_id: str | None = None
     event_name: str | None = None
@@ -1620,6 +1621,7 @@ def preview_group(group_id: int):
             PreviewStreamModel(
                 stream_id=s.stream_id,
                 stream_name=s.stream_name,
+                is_stale=s.is_stale,
                 matched=s.matched,
                 event_id=s.event_id,
                 event_name=s.event_name,
@@ -1755,12 +1757,12 @@ def process_group(group_id: int):
                 detail=f"Group {group_id} not found",
             )
 
-    # Get Dispatcharr client
+    # Get Dispatcharr connection (managers are required)
     factory = get_factory(get_db)
-    client = factory.get_client() if factory else None
+    dispatcharr_conn = factory.get_connection() if factory else None
 
     # Process the group
-    group_service = create_group_service(get_db, client)
+    group_service = create_group_service(get_db, dispatcharr_conn)
     result = group_service.process_group(group_id, date.today())
 
     duration = 0.0
@@ -1794,12 +1796,12 @@ def process_all_groups():
     from teamarr.dispatcharr import get_factory
     from teamarr.services import create_group_service
 
-    # Get Dispatcharr client
+    # Get Dispatcharr connection (managers are required)
     factory = get_factory(get_db)
-    client = factory.get_client() if factory else None
+    dispatcharr_conn = factory.get_connection() if factory else None
 
     # Process all groups
-    group_service = create_group_service(get_db, client)
+    group_service = create_group_service(get_db, dispatcharr_conn)
     batch_result = group_service.process_all_groups(date.today())
 
     duration = 0.0
