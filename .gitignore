@@ -57,3 +57,6 @@ dev.sh
 
 # Plans and status (local only)
 plans/
+
+# Development context (personal credentials)
+.dev-context.md
