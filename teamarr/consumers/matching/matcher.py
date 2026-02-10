@@ -524,9 +524,10 @@ class StreamMatcher:
         # Determine effective stream timezone for date/time comparison
         # Priority: extracted TZ from stream > group setting > None (use user_tz as fallback)
         stream_tz = self._stream_tz
-        if classified.normalized.extracted_tz:
+        extracted_tz = getattr(classified.normalized, "extracted_tz", None)
+        if extracted_tz:
             try:
-                stream_tz = ZoneInfo(classified.normalized.extracted_tz)
+                stream_tz = ZoneInfo(extracted_tz)
             except (KeyError, ValueError):
                 pass  # Keep group setting or None
 

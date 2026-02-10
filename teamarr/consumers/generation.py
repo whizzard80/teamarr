@@ -1176,7 +1176,7 @@ def _gold_zone_stream_date_check(stream_name: str) -> tuple[bool, str | None]:
     from teamarr.consumers.matching.normalizer import extract_and_mask_datetime
     from teamarr.utilities.tz import now_user
 
-    _, extracted_date, _, _ = extract_and_mask_datetime(stream_name)
+    _, extracted_date, _ = extract_and_mask_datetime(stream_name)
 
     if extracted_date is None:
         return True, None
