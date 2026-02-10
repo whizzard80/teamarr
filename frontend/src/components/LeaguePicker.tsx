@@ -1,11 +1,12 @@
 import { useState, useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { X, Loader2, Check, ChevronRight, ChevronDown } from "lucide-react"
+import { Loader2, Check, ChevronRight, ChevronDown } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn, getSportDisplayName, getLeagueDisplayName } from "@/lib/utils"
+import { SelectedBadges, type BadgeItem } from "@/components/ui/selected-badges"
 import type { CachedLeague } from "@/api/teams"
 import { getLeagues, getSports } from "@/api/teams"
 
@@ -29,6 +30,10 @@ interface LeaguePickerProps {
   showSearch?: boolean
   showSelectedBadges?: boolean
   maxBadges?: number
+  /** Filter to show only leagues from a specific sport (e.g., "soccer") */
+  sportFilter?: string
+  /** Exclude leagues from a specific sport (e.g., "soccer" when using SoccerModeSelector) */
+  excludeSport?: string
 }
 
 export function LeaguePicker({
@@ -39,6 +44,8 @@ export function LeaguePicker({
   showSearch = true,
   showSelectedBadges = true,
   maxBadges = 10,
+  sportFilter,
+  excludeSport,
 }: LeaguePickerProps) {
   const [search, setSearch] = useState("")
   const [expandedSports, setExpandedSports] = useState<Set<string>>(new Set())
@@ -61,20 +68,26 @@ export function LeaguePicker({
   const selectedSet = useMemo(() => new Set(selectedLeagues), [selectedLeagues])
 
   // Group leagues by sport (normalize to lowercase for consistent grouping)
+  // When sportFilter is provided, only include leagues from that sport
+  // When excludeSport is provided, exclude leagues from that sport
   const leaguesBySport = useMemo(() => {
     if (!cachedLeagues) return {}
     const grouped: Record<string, CachedLeague[]> = {}
     for (const league of cachedLeagues) {
       const sport = (league.sport || "other").toLowerCase()
+      // Skip if sportFilter is set and doesn't match
+      if (sportFilter && sport !== sportFilter.toLowerCase()) continue
+      // Skip if excludeSport is set and matches
+      if (excludeSport && sport === excludeSport.toLowerCase()) continue
       if (!grouped[sport]) grouped[sport] = []
       grouped[sport].push(league)
     }
-    // Sort leagues within each sport
+    // Sort leagues within each sport (guard against null names from bad cache data)
     for (const sport of Object.keys(grouped)) {
-      grouped[sport].sort((a, b) => a.name.localeCompare(b.name))
+      grouped[sport].sort((a, b) => (a.name || a.slug).localeCompare(b.name || b.slug))
     }
     return grouped
-  }, [cachedLeagues])
+  }, [cachedLeagues, sportFilter, excludeSport])
 
   const sports = Object.keys(leaguesBySport).sort()
 
@@ -96,13 +109,26 @@ export function LeaguePicker({
   }
 
   // Global select/clear all (multi-select only)
+  // When sportFilter is active, only operate on filtered leagues
   const selectAllLeagues = () => {
-    const allSlugs = cachedLeagues?.map(l => l.slug) || []
-    onSelectionChange(allSlugs)
+    const filteredSlugs = Object.values(leaguesBySport).flat().map(l => l.slug)
+    // Merge with existing selections (don't lose other sports when filtering)
+    const next = new Set(selectedSet)
+    for (const slug of filteredSlugs) {
+      next.add(slug)
+    }
+    onSelectionChange(Array.from(next))
   }
 
   const clearAllLeagues = () => {
-    onSelectionChange([])
+    if (sportFilter || excludeSport) {
+      // Only clear leagues that are in the filtered view
+      const filteredSlugs = new Set(Object.values(leaguesBySport).flat().map(l => l.slug))
+      const next = Array.from(selectedSet).filter(slug => !filteredSlugs.has(slug))
+      onSelectionChange(next)
+    } else {
+      onSelectionChange([])
+    }
   }
 
   // Per-sport select/clear (multi-select only)
@@ -193,36 +219,23 @@ export function LeaguePicker({
             <Button variant="ghost" size="sm" onClick={selectAllLeagues}>
               Select All
             </Button>
-            {selectedSet.size > 0 && (
-              <Button variant="ghost" size="sm" onClick={clearAllLeagues}>
-                Clear All
-              </Button>
-            )}
+            <Button variant="ghost" size="sm" onClick={clearAllLeagues} disabled={selectedSet.size === 0}>
+              Clear All
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Selected badges (multi-select only, or single with showSelectedBadges) */}
+      {/* Selected badges (multi-select only) */}
       {showSelectedBadges && selectedSet.size > 0 && !singleSelect && (
-        <div className="flex flex-wrap gap-1">
-          {Array.from(selectedSet).slice(0, maxBadges).map(slug => {
+        <SelectedBadges
+          items={Array.from(selectedSet).map((slug): BadgeItem => {
             const league = cachedLeagues?.find(l => l.slug === slug)
-            return (
-              <Badge key={slug} variant="secondary" className="gap-1">
-                {league?.logo_url && (
-                  <img src={league.logo_url} alt="" className="h-3 w-3 object-contain" />
-                )}
-                {league ? getLeagueDisplayName(league, true) : slug}
-                <button onClick={() => selectLeague(slug)} className="ml-1 hover:bg-muted rounded">
-                  <X className="h-3 w-3" />
-                </button>
-              </Badge>
-            )
+            return { key: slug, label: league ? getLeagueDisplayName(league, true) : slug, icon: league?.logo_url ?? undefined }
           })}
-          {selectedSet.size > maxBadges && (
-            <Badge variant="outline">+{selectedSet.size - maxBadges} more</Badge>
-          )}
-        </div>
+          maxBadges={maxBadges}
+          onRemove={(slug) => selectLeague(slug)}
+        />
       )}
 
       {/* League picker by sport */}
@@ -233,7 +246,7 @@ export function LeaguePicker({
             sport.toLowerCase().includes(search.toLowerCase()) ||
             leaguesBySport[sport].some(l =>
               l.slug.toLowerCase().includes(search.toLowerCase()) ||
-              l.name.toLowerCase().includes(search.toLowerCase())
+              (l.name || "").toLowerCase().includes(search.toLowerCase())
             )
           )
           .map((sport) => {
@@ -241,7 +254,7 @@ export function LeaguePicker({
             const filteredLeagues = search
               ? leagues.filter(l =>
                   l.slug.toLowerCase().includes(search.toLowerCase()) ||
-                  l.name.toLowerCase().includes(search.toLowerCase())
+                  (l.name || "").toLowerCase().includes(search.toLowerCase())
                 )
               : leagues
 
@@ -256,8 +269,10 @@ export function LeaguePicker({
             const allSelected = isSportFullySelected(sport)
             const selectedCount = displayLeagues.filter(l => selectedSet.has(l.slug)).length
 
+            // Soccer in multi-select mode: show consolidated checkbox with top leagues split
+            // But NOT when sportFilter="soccer" - in that case user wants to pick individual leagues
             const isSoccer = sport.toLowerCase() === 'soccer'
-            if (!singleSelect && isSoccer && !search) {
+            if (!singleSelect && isSoccer && !search && !sportFilter) {
               const soccerLeagues = leaguesBySport[sport] || []
               const topSoccerLeagues = soccerLeagues.filter(l => SOCCER_TOP_LEAGUE_SLUGS.has(l.slug))
               const otherSoccerLeagues = soccerLeagues.filter(l => !SOCCER_TOP_LEAGUE_SLUGS.has(l.slug))
@@ -391,7 +406,10 @@ export function LeaguePicker({
             return (
               <div key={sport}>
                 <div
-                  className="flex items-center justify-between px-3 py-2 bg-muted/50 sticky top-0 cursor-pointer hover:bg-muted/70"
+                  className={cn(
+                    "flex items-center justify-between px-3 py-2 bg-muted/50 cursor-pointer hover:bg-muted/70",
+                    !sportFilter && "sticky top-0"
+                  )}
                   onClick={() => toggleExpanded(sport)}
                 >
                   <div className="flex items-center gap-2">

@@ -153,15 +153,19 @@ class DispatcharrFactory:
             ConnectionTestResult with success status and details
         """
         from teamarr.database.settings import get_dispatcharr_settings
+        from teamarr.database.settings.read import get_all_settings
 
         # Get settings
         if url and username and password:
             test_url = url
             test_username = username
             test_password = password
+            with self._db_factory() as conn:
+                api_settings = get_all_settings(conn).api
         else:
             with self._db_factory() as conn:
                 settings = get_dispatcharr_settings(conn)
+                api_settings = get_all_settings(conn).api
 
             if not settings.url or not settings.username:
                 return ConnectionTestResult(
@@ -179,10 +183,12 @@ class DispatcharrFactory:
                 base_url=test_url,
                 username=test_username,
                 password=test_password,
+                timeout=float(api_settings.timeout),
+                max_retries=api_settings.retry_count,
             )
 
             # Try to get channels (simple test)
-            response = client.get("/api/channels/channels/?page_size=1")
+            response = client.get("/api/channels/channels/?page=1&page_size=1")
             if response is None:
                 client.close()
                 return ConnectionTestResult(
@@ -270,9 +276,11 @@ class DispatcharrFactory:
             DispatcharrConnection or None if not configured
         """
         from teamarr.database.settings import get_dispatcharr_settings
+        from teamarr.database.settings.read import get_all_settings
 
         with self._db_factory() as conn:
             settings = get_dispatcharr_settings(conn)
+            api_settings = get_all_settings(conn).api
 
         if not settings.enabled or not settings.url or not settings.username:
             return None
@@ -282,6 +290,8 @@ class DispatcharrFactory:
                 base_url=settings.url,
                 username=settings.username,
                 password=settings.password or "",
+                timeout=float(api_settings.timeout),
+                max_retries=api_settings.retry_count,
             )
 
             connection = DispatcharrConnection(

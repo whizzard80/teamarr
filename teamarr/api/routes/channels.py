@@ -703,27 +703,10 @@ def execute_reset_channels():
             errors.append(f"Failed to delete {ch.name}: {result.error}")
 
     # Mark all managed_channels as deleted
-    import logging
-
-    logger = logging.getLogger(__name__)
+    from teamarr.database.channels.crud import mark_all_channels_deleted
 
     with get_db() as conn:
-        # Count before
-        cursor = conn.execute("SELECT COUNT(*) FROM managed_channels WHERE deleted_at IS NULL")
-        count_before = cursor.fetchone()[0]
-
-        cursor = conn.execute(
-            """UPDATE managed_channels
-               SET deleted_at = CURRENT_TIMESTAMP
-               WHERE deleted_at IS NULL"""
-        )
-        rows_updated = cursor.rowcount
-        conn.commit()
-
-        logger.info(
-            f"Reset: marked {rows_updated} managed_channels as deleted "
-            f"(had {count_before} active records before)"
-        )
+        mark_all_channels_deleted(conn)
 
     return ResetExecuteResponse(
         success=len(errors) == 0,

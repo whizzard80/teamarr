@@ -1,10 +1,10 @@
 import { useState, useMemo } from "react"
 import { useQuery, useQueries } from "@tanstack/react-query"
-import { ChevronDown, ChevronRight, Search, X } from "lucide-react"
+import { ChevronDown, ChevronRight, Search } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { getLeagueTeams, getTeamPickerLeagues, type CachedTeam } from "@/api/teams"
+import { SelectedBadges } from "@/components/ui/selected-badges"
 import type { TeamFilterEntry } from "@/api/types"
 
 interface TeamPickerProps {
@@ -298,28 +298,16 @@ export function TeamPicker({
   return (
     <div className="space-y-3">
       {/* Selected teams badges */}
-      {selectedTeams.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {selectedTeams.slice(0, 10).map((team) => (
-            <Badge
-              key={`${team.provider}-${team.team_id}`}
-              variant="secondary"
-              className="gap-1 pr-1"
-            >
-              {team.name}
-              <button
-                onClick={() => removeTeam(team)}
-                className="ml-1 rounded-full hover:bg-muted-foreground/20"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </Badge>
-          ))}
-          {selectedTeams.length > 10 && (
-            <Badge variant="outline">+{selectedTeams.length - 10} more</Badge>
-          )}
-        </div>
-      )}
+      <SelectedBadges
+        items={selectedTeams.map((team) => ({
+          key: `${team.provider}-${team.team_id}`,
+          label: team.name || team.team_id,
+        }))}
+        onRemove={(key) => {
+          const team = selectedTeams.find(t => `${t.provider}-${t.team_id}` === key)
+          if (team) removeTeam(team)
+        }}
+      />
 
       {/* Search input */}
       <div className="relative">

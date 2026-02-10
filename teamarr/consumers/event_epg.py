@@ -207,6 +207,7 @@ class EventEPGGenerator:
         stream_name: str | None = None,
         segment_start: datetime | None = None,
         segment_end: datetime | None = None,
+        template_override: EventTemplateConfig | None = None,
     ) -> Programme:
         """Convert an Event to a Programme with template resolution.
 
@@ -218,7 +219,11 @@ class EventEPGGenerator:
             stream_name: Optional stream name (for UFC prelim/main detection)
             segment_start: Explicit segment start time (for UFC segments)
             segment_end: Explicit segment end time (for UFC segments)
+            template_override: Optional template to use instead of options.template
+                (for sport/league-specific templates in multi-sport groups)
         """
+        # Use template override if provided, otherwise fall back to options.template
+        template = template_override or options.template
         # If explicit segment timing is provided, use it (Phase 2 UFC segments)
         if segment_start and segment_end:
             start = segment_start - timedelta(minutes=options.pregame_minutes)
@@ -239,17 +244,17 @@ class EventEPGGenerator:
             stop = event.start_time + timedelta(hours=duration)
 
         # Resolve templates
-        title = self._resolver.resolve(options.template.title_format, context)
-        subtitle = self._resolver.resolve(options.template.subtitle_format, context)
+        title = self._resolver.resolve(template.title_format, context)
+        subtitle = self._resolver.resolve(template.subtitle_format, context)
 
         # Use conditional description selector if conditions are defined
         description = None
-        if options.template.conditional_descriptions:
+        if template.conditional_descriptions:
             from teamarr.templates.conditions import get_condition_selector
 
             selector = get_condition_selector()
             selected_template = selector.select(
-                options.template.conditional_descriptions,
+                template.conditional_descriptions,
                 context,
                 context.game_context,  # GameContext for the event
             )
@@ -258,7 +263,7 @@ class EventEPGGenerator:
 
         # Fallback to default description format
         if not description:
-            description = self._resolver.resolve(options.template.description_format, context)
+            description = self._resolver.resolve(template.description_format, context)
 
         # Prepend "POSTPONED | " label if event is postponed and setting is enabled
         title = prepend_postponed_label(title, event, options.prepend_postponed_label)
@@ -268,13 +273,13 @@ class EventEPGGenerator:
         # Icon: use template program_art_url if set (no fallback to team logo)
         # Unknown variables stay literal (e.g., {bad_var}) so user can identify issues
         icon = None
-        if options.template.program_art_url:
-            icon = self._resolver.resolve(options.template.program_art_url, context)
+        if template.program_art_url:
+            icon = self._resolver.resolve(template.program_art_url, context)
 
         # Resolve categories (may contain {sport} variable)
         # Preserve user's original casing for custom categories
         resolved_categories = []
-        for cat in options.template.xmltv_categories:
+        for cat in template.xmltv_categories:
             if "{" in cat:
                 resolved_categories.append(self._resolver.resolve(cat, context))
             else:
@@ -289,8 +294,8 @@ class EventEPGGenerator:
             subtitle=subtitle,
             icon=icon,
             categories=resolved_categories,
-            xmltv_flags=options.template.xmltv_flags,
-            xmltv_video=options.template.xmltv_video,
+            xmltv_flags=template.xmltv_flags,
+            xmltv_video=template.xmltv_video,
         )
 
     # Keywords for detecting UFC prelim streams
@@ -383,43 +388,55 @@ class EventEPGGenerator:
 
             # Extract segment info for UFC events
             segment = match.get("segment")
-            segment_display = match.get("segment_display", "")
             segment_start = match.get("segment_start")
             segment_end = match.get("segment_end")
 
+            # Use per-event template if provided (sport/league-specific), otherwise use default
+            event_template = match.get("_event_template") or options.template
+
+            # Resolve {exception_keyword} if annotated (parity with lifecycle path)
+            exception_keyword = match.get("_exception_keyword")
+
             # Generate consistent tvg_id matching what ChannelLifecycleService uses
             # This ensures XMLTV channel IDs match managed_channels.tvg_id for EPG association
+            # Include exception_keyword so each keyword variant gets its own EPG programmes
             from teamarr.consumers.lifecycle import generate_event_tvg_id
 
-            tvg_id = generate_event_tvg_id(event.id, event.provider, segment)
+            tvg_id = generate_event_tvg_id(event.id, event.provider, segment, exception_keyword)
             stream_name = stream.get("name", "")
 
             # Build context using home team perspective
+            # Inject exception_keyword into extra_vars so it resolves in all template fields
+            keyword_value = exception_keyword.title() if exception_keyword else ""
             context = self._context_builder.build_for_event(
                 event=event,
                 team_id=event.home_team.id,
                 league=event.league,
                 card_segment=segment,
             )
+            context.extra_vars = {"exception_keyword": keyword_value}
 
             # Generate channel name from template
             # Unknown variables stay literal (e.g., {bad_var}) so user can identify issues
-            channel_name = self._resolver.resolve(options.template.channel_name_format, context)
+            channel_name = self._resolver.resolve(
+                event_template.channel_name_format, context
+            )
+
+            # Auto-append keyword if template doesn't use {exception_keyword} variable
+            uses_keyword_var = "{exception_keyword}" in event_template.channel_name_format
+            if exception_keyword and not uses_keyword_var:
+                channel_name = f"{channel_name} ({keyword_value})"
 
             # Prepend "Postponed: " to channel name if event is postponed and setting is enabled
             if options.prepend_postponed_label and is_event_postponed(event):
                 channel_name = f"{POSTPONED_LABEL}{channel_name}"
 
-            # Add segment display name to channel name for UFC segments
-            if segment_display:
-                channel_name = f"{channel_name} - {segment_display}"
-
             # Use template-configured logo if set (no fallback to team logo)
             # Resolve template variables in logo URL (e.g., {league_id}, {home_team_pascal})
             channel_icon = None
-            if options.template.event_channel_logo_url:
+            if event_template.event_channel_logo_url:
                 channel_icon = self._resolver.resolve(
-                    options.template.event_channel_logo_url, context
+                    event_template.event_channel_logo_url, context
                 )
 
             channel_info = EventChannelInfo(
@@ -431,6 +448,7 @@ class EventEPGGenerator:
 
             # Generate programme
             # If segment timing is provided, use it; otherwise fall back to stream_name detection
+            # Pass per-event template if resolved (for sport/league-specific templates)
             programme = self._event_to_programme(
                 event,
                 context,
@@ -439,6 +457,7 @@ class EventEPGGenerator:
                 stream_name=stream_name,
                 segment_start=segment_start,
                 segment_end=segment_end,
+                template_override=match.get("_event_template"),
             )
             programmes.append(programme)
 

@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   listTeams,
-  getTeam,
   createTeam,
   updateTeam,
   deleteTeam,
@@ -13,14 +12,6 @@ export function useTeams(activeOnly = false) {
   return useQuery({
     queryKey: ["teams", { activeOnly }],
     queryFn: () => listTeams(activeOnly),
-  })
-}
-
-export function useTeam(teamId: number) {
-  return useQuery({
-    queryKey: ["team", teamId],
-    queryFn: () => getTeam(teamId),
-    enabled: teamId > 0,
   })
 }
 

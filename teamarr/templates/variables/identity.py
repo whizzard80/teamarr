@@ -326,19 +326,23 @@ def extract_league_logo(ctx: TemplateContext, game_ctx: GameContext | None) -> s
     description="Exception keyword label (e.g., 'Spanish', '4K', 'Manningcast') - set at channel creation",  # noqa: E501
 )
 def extract_exception_keyword(ctx: TemplateContext, game_ctx: GameContext | None) -> str:
-    """Return exception keyword label for channel naming.
+    """Return exception keyword label for channel naming and EPG content.
 
-    This variable is special - it's populated via extra_vars at channel creation
-    time, not extracted from event data. The extractor returns empty string
-    as a placeholder; actual values are injected by the lifecycle service.
+    This variable is special - it's populated via extra_vars on TemplateContext,
+    not extracted from event data. The extractor returns empty string as a
+    fallback; actual values are injected by:
+    - Lifecycle service (channel creation, via _resolve_template extra_variables)
+    - EPG generator (programme generation, via context.extra_vars)
 
-    Used in channel name templates like:
+    Works in ALL template fields: channel name, title, subtitle, description, logo URL.
+
+    Used in templates like:
         "{away_team} @ {home_team} ({exception_keyword})"
         "{exception_keyword}: {matchup}"
 
     Examples:
         Spanish, French, 4K, Manningcast
     """
-    # Value is injected via extra_vars in lifecycle service
-    # This extractor exists for validation and UI display only
+    # Value is injected via extra_vars on TemplateContext
+    # This extractor exists for validation, UI display, and as fallback
     return ""

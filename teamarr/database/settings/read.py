@@ -9,11 +9,13 @@ from sqlite3 import Connection
 from .types import (
     AllSettings,
     APISettings,
+    BackupSettings,
     ChannelNumberingSettings,
     DispatcharrSettings,
     DisplaySettings,
     DurationSettings,
     EPGSettings,
+    GoldZoneSettings,
     LifecycleSettings,
     ReconciliationSettings,
     SchedulerSettings,
@@ -141,8 +143,8 @@ def get_all_settings(conn: Connection) -> AllSettings:
         ),
         display=_build_display_settings(row),
         api=APISettings(
-            timeout=row["api_timeout"] or 10,
-            retry_count=row["api_retry_count"] or 3,
+            timeout=row["api_timeout"] or 30,
+            retry_count=row["api_retry_count"] or 5,
             soccer_cache_refresh_frequency=(row["soccer_cache_refresh_frequency"] or "weekly"),
             team_cache_refresh_frequency=row["team_cache_refresh_frequency"] or "weekly",
         ),
@@ -164,6 +166,10 @@ def get_all_settings(conn: Connection) -> AllSettings:
             if row["default_exclude_teams"]
             else None,
             mode=row["default_team_filter_mode"] or "include",
+            bypass_filter_for_playoffs=bool(row["default_bypass_filter_for_playoffs"])
+            if "default_bypass_filter_for_playoffs" in row.keys()
+            and row["default_bypass_filter_for_playoffs"] is not None
+            else False,
         ),
         channel_numbering=ChannelNumberingSettings(
             numbering_mode=row["channel_numbering_mode"] or "strict_block",
@@ -174,9 +180,25 @@ def get_all_settings(conn: Connection) -> AllSettings:
             rules=_parse_stream_ordering_rules(row["stream_ordering_rules"])
         ),
         update_check=_build_update_check_settings(row),
+        backup=_build_backup_settings(row),
+        gold_zone=_build_gold_zone_settings(row),
         epg_generation_counter=row["epg_generation_counter"] or 0,
         schema_version=row["schema_version"] or 2,
     )
+
+
+def get_tsdb_api_key(conn: Connection) -> str | None:
+    """Get the TSDB API key from settings.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        TSDB API key string or None if not set
+    """
+    cursor = conn.execute("SELECT tsdb_api_key FROM settings WHERE id = 1")
+    row = cursor.fetchone()
+    return row["tsdb_api_key"] if row else None
 
 
 def get_dispatcharr_settings(conn: Connection) -> DispatcharrSettings:
@@ -377,7 +399,7 @@ def get_team_filter_settings(conn: Connection) -> TeamFilterSettings:
     """
     cursor = conn.execute(
         """SELECT team_filter_enabled, default_include_teams, default_exclude_teams,
-                  default_team_filter_mode
+                  default_team_filter_mode, default_bypass_filter_for_playoffs
            FROM settings WHERE id = 1"""
     )
     row = cursor.fetchone()
@@ -396,6 +418,10 @@ def get_team_filter_settings(conn: Connection) -> TeamFilterSettings:
         if row["default_exclude_teams"]
         else None,
         mode=row["default_team_filter_mode"] or "include",
+        bypass_filter_for_playoffs=bool(row["default_bypass_filter_for_playoffs"])
+        if "default_bypass_filter_for_playoffs" in row.keys()
+        and row["default_bypass_filter_for_playoffs"] is not None
+        else False,
     )
 
 
@@ -519,3 +545,95 @@ def get_update_check_settings(conn: Connection) -> UpdateCheckSettings:
         return UpdateCheckSettings()
 
     return _build_update_check_settings(row)
+
+
+# Single source of truth for backup settings defaults
+_BACKUP_DEFAULTS = BackupSettings()
+
+
+def _build_backup_settings(row) -> BackupSettings:
+    """Build BackupSettings from DB row, using dataclass defaults for NULL values."""
+    d = _BACKUP_DEFAULTS
+    return BackupSettings(
+        enabled=bool(row["scheduled_backup_enabled"])
+        if row["scheduled_backup_enabled"] is not None
+        else d.enabled,
+        cron=row["scheduled_backup_cron"] or d.cron,
+        max_count=row["scheduled_backup_max_count"]
+        if row["scheduled_backup_max_count"] is not None
+        else d.max_count,
+        path=row["scheduled_backup_path"] or d.path,
+    )
+
+
+def get_backup_settings(conn: Connection) -> BackupSettings:
+    """Get scheduled backup settings.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        BackupSettings object with backup configuration
+    """
+    cursor = conn.execute(
+        """SELECT scheduled_backup_enabled, scheduled_backup_cron,
+                  scheduled_backup_max_count, scheduled_backup_path
+           FROM settings WHERE id = 1"""
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        return BackupSettings()
+
+    return _build_backup_settings(row)
+
+
+# Single source of truth for gold zone defaults
+_GOLD_ZONE_DEFAULTS = GoldZoneSettings()
+
+
+def _build_gold_zone_settings(row) -> GoldZoneSettings:
+    """Build GoldZoneSettings from DB row, using dataclass defaults for NULL values."""
+    d = _GOLD_ZONE_DEFAULTS
+
+    # Parse channel_profile_ids from JSON
+    profile_ids = None
+    raw_profiles = row["gold_zone_channel_profile_ids"]
+    if raw_profiles:
+        try:
+            profile_ids = json.loads(raw_profiles)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return GoldZoneSettings(
+        enabled=bool(row["gold_zone_enabled"])
+        if row["gold_zone_enabled"] is not None
+        else d.enabled,
+        channel_number=row["gold_zone_channel_number"],
+        channel_group_id=row["gold_zone_channel_group_id"],
+        channel_profile_ids=profile_ids,
+        stream_profile_id=row["gold_zone_stream_profile_id"],
+    )
+
+
+def get_gold_zone_settings(conn: Connection) -> GoldZoneSettings:
+    """Get Gold Zone settings.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        GoldZoneSettings object
+    """
+    cursor = conn.execute(
+        """SELECT gold_zone_enabled, gold_zone_channel_number,
+                  gold_zone_channel_group_id, gold_zone_channel_profile_ids,
+                  gold_zone_stream_profile_id
+           FROM settings WHERE id = 1"""
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        return GoldZoneSettings()
+
+    return _build_gold_zone_settings(row)

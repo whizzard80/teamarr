@@ -3,6 +3,7 @@
 Contains timing types, result dataclasses, and helper functions.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -118,10 +119,27 @@ class StreamProcessResult:
 # =============================================================================
 
 
+def slugify_keyword(keyword: str) -> str:
+    """Sanitize an exception keyword into a tvg-id-safe slug.
+
+    Converts to lowercase, replaces spaces/special chars with hyphens,
+    strips leading/trailing hyphens.
+
+    Examples:
+        "Spanish" → "spanish"
+        "4K HDR" → "4k-hdr"
+        "Peyton and Eli" → "peyton-and-eli"
+    """
+    slug = keyword.lower().strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    return slug.strip("-")
+
+
 def generate_event_tvg_id(
     event_id: str,
     provider: str = "espn",
     segment: str | None = None,
+    exception_keyword: str | None = None,
 ) -> str:
     """Generate consistent tvg_id for an event.
 
@@ -130,15 +148,26 @@ def generate_event_tvg_id(
     2. When creating channels in Dispatcharr
     3. To look up EPGData for channel-EPG association
 
+    When an exception_keyword is provided, the tvg_id is made unique per keyword
+    so each variant gets its own XMLTV channel and programme entries, allowing
+    {exception_keyword} to resolve correctly in all template fields.
+
     Args:
         event_id: Provider event ID (e.g., "401547679")
         provider: Provider name (default: espn)
         segment: Optional card segment for UFC/MMA (e.g., "prelims", "main_card")
+        exception_keyword: Optional exception keyword label (e.g., "Spanish", "4K")
 
     Returns:
-        Formatted tvg_id (e.g., "teamarr-event-401547679" or
-        "teamarr-event-401547679-prelims" for segments)
+        Formatted tvg_id. Examples:
+        - "teamarr-event-401547679"
+        - "teamarr-event-401547679-prelims"
+        - "teamarr-event-401547679-spanish"
+        - "teamarr-event-401547679-prelims-spanish"
     """
+    parts = [f"teamarr-event-{event_id}"]
     if segment:
-        return f"teamarr-event-{event_id}-{segment}"
-    return f"teamarr-event-{event_id}"
+        parts.append(segment)
+    if exception_keyword:
+        parts.append(slugify_keyword(exception_keyword))
+    return "-".join(parts)

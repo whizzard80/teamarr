@@ -203,6 +203,16 @@ def get_template(conn: Connection, template_id: int) -> Template | None:
     return _row_to_template(row) if row else None
 
 
+def get_template_raw(conn: Connection, template_id: int) -> dict | None:
+    """Get a template by ID as a raw dict (unparsed JSON fields).
+
+    Used by API routes that need the raw row for response serialization.
+    """
+    cursor = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
 def get_template_by_name(conn: Connection, name: str) -> Template | None:
     """Get a template by name.
 
@@ -216,6 +226,29 @@ def get_template_by_name(conn: Connection, name: str) -> Template | None:
     cursor = conn.execute("SELECT * FROM templates WHERE name = ?", (name,))
     row = cursor.fetchone()
     return _row_to_template(row) if row else None
+
+
+def list_templates_with_counts(conn: Connection) -> list[dict]:
+    """List all templates with team and group usage counts.
+
+    Returns raw dicts (not Template objects) for API response compatibility.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        List of template dicts with team_count and group_count fields
+    """
+    cursor = conn.execute(
+        """
+        SELECT t.*,
+               COALESCE((SELECT COUNT(*) FROM teams WHERE template_id = t.id), 0) as team_count,
+               COALESCE((SELECT COUNT(*) FROM event_epg_groups WHERE template_id = t.id), 0) as group_count
+        FROM templates t
+        ORDER BY t.name
+        """  # noqa: E501
+    )
+    return [dict(row) for row in cursor.fetchall()]
 
 
 def get_all_templates(conn: Connection, template_type: str | None = None) -> list[Template]:
@@ -236,6 +269,26 @@ def get_all_templates(conn: Connection, template_type: str | None = None) -> lis
         cursor = conn.execute("SELECT * FROM templates ORDER BY name")
 
     return [_row_to_template(row) for row in cursor.fetchall()]
+
+
+def get_existing_template_ids(conn: Connection, template_ids: list[int]) -> set[int]:
+    """Check which template IDs exist in the database.
+
+    Args:
+        conn: Database connection
+        template_ids: List of template IDs to check
+
+    Returns:
+        Set of IDs that exist
+    """
+    if not template_ids:
+        return set()
+    placeholders = ",".join("?" * len(template_ids))
+    rows = conn.execute(
+        f"SELECT id FROM templates WHERE id IN ({placeholders})",
+        template_ids,
+    ).fetchall()
+    return {row["id"] for row in rows}
 
 
 def get_templates_for_sport(conn: Connection, sport: str) -> list[Template]:
@@ -454,6 +507,10 @@ def template_to_filler_config(template: Template) -> FillerConfig:
     pg_cond = template.postgame_conditional or {}
     postgame_conditional = ConditionalFillerTemplate(
         enabled=pg_cond.get("enabled", False),
+        title_final=pg_cond.get("title_final"),
+        title_not_final=pg_cond.get("title_not_final"),
+        subtitle_final=pg_cond.get("subtitle_final"),
+        subtitle_not_final=pg_cond.get("subtitle_not_final"),
         description_final=pg_cond.get("description_final"),
         description_not_final=pg_cond.get("description_not_final"),
     )
@@ -471,6 +528,10 @@ def template_to_filler_config(template: Template) -> FillerConfig:
     idle_cond = template.idle_conditional or {}
     idle_conditional = ConditionalFillerTemplate(
         enabled=idle_cond.get("enabled", False),
+        title_final=idle_cond.get("title_final"),
+        title_not_final=idle_cond.get("title_not_final"),
+        subtitle_final=idle_cond.get("subtitle_final"),
+        subtitle_not_final=idle_cond.get("subtitle_not_final"),
         description_final=idle_cond.get("description_final"),
         description_not_final=idle_cond.get("description_not_final"),
     )

@@ -4,16 +4,13 @@ CRUD operations for user-defined detection patterns that extend
 the built-in patterns in DetectionKeywordService.
 """
 
-import logging
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from teamarr.database.connection import get_db
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/detection-keywords", tags=["Detection Keywords"])
 
@@ -118,6 +115,13 @@ def _row_to_response(row: dict) -> DetectionKeywordResponse:
     )
 
 
+def _invalidate_detection_cache():
+    """Invalidate the detection keyword service cache after mutations."""
+    from teamarr.services.detection_keywords import DetectionKeywordService
+
+    DetectionKeywordService.invalidate_cache()
+
+
 # =============================================================================
 # API Routes
 # =============================================================================
@@ -127,27 +131,16 @@ def _row_to_response(row: dict) -> DetectionKeywordResponse:
 def list_keywords(
     category: CategoryType | None = None,
     enabled_only: bool = False,
-    conn=Depends(get_db),
 ):
     """List all detection keywords, optionally filtered by category."""
-    query = "SELECT * FROM detection_keywords WHERE 1=1"
-    params: list = []
+    from teamarr.database.detection_keywords import list_keywords as db_list
 
-    if category:
-        query += " AND category = ?"
-        params.append(category)
-
-    if enabled_only:
-        query += " AND enabled = 1"
-
-    query += " ORDER BY category, priority DESC, keyword"
-
-    rows = conn.execute(query, params).fetchall()
-
-    return DetectionKeywordListResponse(
-        total=len(rows),
-        keywords=[_row_to_response(dict(r)) for r in rows],
-    )
+    with get_db() as conn:
+        rows = db_list(conn, category=category, enabled_only=enabled_only)
+        return DetectionKeywordListResponse(
+            total=len(rows),
+            keywords=[_row_to_response(r) for r in rows],
+        )
 
 
 @router.get("/categories")
@@ -209,67 +202,39 @@ def list_categories():
 def list_by_category(
     category: CategoryType,
     enabled_only: bool = False,
-    conn=Depends(get_db),
 ):
     """List detection keywords for a specific category."""
-    query = "SELECT * FROM detection_keywords WHERE category = ?"
-    params: list = [category]
+    from teamarr.database.detection_keywords import list_keywords as db_list
 
-    if enabled_only:
-        query += " AND enabled = 1"
-
-    query += " ORDER BY priority DESC, keyword"
-
-    rows = conn.execute(query, params).fetchall()
-
-    return DetectionKeywordListResponse(
-        total=len(rows),
-        keywords=[_row_to_response(dict(r)) for r in rows],
-    )
+    with get_db() as conn:
+        rows = db_list(conn, category=category, enabled_only=enabled_only)
+        return DetectionKeywordListResponse(
+            total=len(rows),
+            keywords=[_row_to_response(r) for r in rows],
+        )
 
 
 @router.post("", response_model=DetectionKeywordResponse, status_code=201)
 def create_keyword(
     request: DetectionKeywordCreate,
-    conn=Depends(get_db),
 ):
     """Create a new detection keyword."""
+    from teamarr.database.detection_keywords import create_keyword as db_create
+
     try:
-        cursor = conn.execute(
-            """INSERT INTO detection_keywords
-               (category, keyword, is_regex, target_value, enabled, priority, description)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                request.category,
-                request.keyword,
-                int(request.is_regex),
-                request.target_value,
-                int(request.enabled),
-                request.priority,
-                request.description,
-            ),
-        )
-        conn.commit()
-        keyword_id = cursor.lastrowid
-
-        row = conn.execute(
-            "SELECT * FROM detection_keywords WHERE id = ?", (keyword_id,)
-        ).fetchone()
-
-        logger.info(
-            "[DETECTION_KW] Created keyword id=%d category=%s keyword=%s",
-            keyword_id,
-            request.category,
-            request.keyword,
-        )
-
-        # Invalidate detection service cache
-        from teamarr.services.detection_keywords import DetectionKeywordService
-
-        DetectionKeywordService.invalidate_cache()
-
-        return _row_to_response(dict(row))
-
+        with get_db() as conn:
+            row = db_create(
+                conn,
+                category=request.category,
+                keyword=request.keyword,
+                is_regex=request.is_regex,
+                target_value=request.target_value,
+                enabled=request.enabled,
+                priority=request.priority,
+                description=request.description,
+            )
+        _invalidate_detection_cache()
+        return _row_to_response(row)
     except Exception as e:
         if "UNIQUE constraint failed" in str(e):
             raise HTTPException(
@@ -283,186 +248,83 @@ def create_keyword(
 @router.get("/id/{keyword_id}", response_model=DetectionKeywordResponse)
 def get_keyword(
     keyword_id: int,
-    conn=Depends(get_db),
 ):
     """Get a specific detection keyword by ID."""
-    row = conn.execute(
-        "SELECT * FROM detection_keywords WHERE id = ?", (keyword_id,)
-    ).fetchone()
+    from teamarr.database.detection_keywords import get_keyword as db_get
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Keyword not found")
-
-    return _row_to_response(dict(row))
+    with get_db() as conn:
+        row = db_get(conn, keyword_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Keyword not found")
+        return _row_to_response(row)
 
 
 @router.put("/id/{keyword_id}", response_model=DetectionKeywordResponse)
 def update_keyword(
     keyword_id: int,
     request: DetectionKeywordUpdate,
-    conn=Depends(get_db),
 ):
     """Update a detection keyword."""
-    # Check exists
-    existing = conn.execute(
-        "SELECT * FROM detection_keywords WHERE id = ?", (keyword_id,)
-    ).fetchone()
+    from teamarr.database.detection_keywords import update_keyword as db_update
 
-    if not existing:
-        raise HTTPException(status_code=404, detail="Keyword not found")
-
-    updates = ["updated_at = CURRENT_TIMESTAMP"]
-    values: list = []
-
-    if request.keyword is not None:
-        updates.append("keyword = ?")
-        values.append(request.keyword)
-
-    if request.is_regex is not None:
-        updates.append("is_regex = ?")
-        values.append(int(request.is_regex))
-
-    if request.target_value is not None:
-        updates.append("target_value = ?")
-        values.append(request.target_value)
-    elif request.clear_target_value:
-        updates.append("target_value = NULL")
-
-    if request.enabled is not None:
-        updates.append("enabled = ?")
-        values.append(int(request.enabled))
-
-    if request.priority is not None:
-        updates.append("priority = ?")
-        values.append(request.priority)
-
-    if request.description is not None:
-        updates.append("description = ?")
-        values.append(request.description)
-    elif request.clear_description:
-        updates.append("description = NULL")
-
-    if len(updates) > 1:  # More than just updated_at
-        values.append(keyword_id)
-        conn.execute(
-            f"UPDATE detection_keywords SET {', '.join(updates)} WHERE id = ?",
-            values,
+    with get_db() as conn:
+        row = db_update(
+            conn,
+            keyword_id,
+            keyword=request.keyword,
+            is_regex=request.is_regex,
+            target_value=request.target_value,
+            clear_target_value=request.clear_target_value,
+            enabled=request.enabled,
+            priority=request.priority,
+            description=request.description,
+            clear_description=request.clear_description,
         )
-        conn.commit()
-
-        logger.info("[DETECTION_KW] Updated keyword id=%d", keyword_id)
-
-        # Invalidate detection service cache
-        from teamarr.services.detection_keywords import DetectionKeywordService
-
-        DetectionKeywordService.invalidate_cache()
-
-    row = conn.execute(
-        "SELECT * FROM detection_keywords WHERE id = ?", (keyword_id,)
-    ).fetchone()
-
-    return _row_to_response(dict(row))
+        if not row:
+            raise HTTPException(status_code=404, detail="Keyword not found")
+    _invalidate_detection_cache()
+    return _row_to_response(row)
 
 
 @router.delete("/id/{keyword_id}", status_code=204)
 def delete_keyword(
     keyword_id: int,
-    conn=Depends(get_db),
 ):
     """Delete a detection keyword."""
-    existing = conn.execute(
-        "SELECT * FROM detection_keywords WHERE id = ?", (keyword_id,)
-    ).fetchone()
+    from teamarr.database.detection_keywords import delete_keyword as db_delete
 
-    if not existing:
-        raise HTTPException(status_code=404, detail="Keyword not found")
-
-    conn.execute("DELETE FROM detection_keywords WHERE id = ?", (keyword_id,))
-    conn.commit()
-
-    logger.info(
-        "[DETECTION_KW] Deleted keyword id=%d category=%s keyword=%s",
-        keyword_id,
-        existing["category"],
-        existing["keyword"],
-    )
-
-    # Invalidate detection service cache
-    from teamarr.services.detection_keywords import DetectionKeywordService
-
-    DetectionKeywordService.invalidate_cache()
+    with get_db() as conn:
+        result = db_delete(conn, keyword_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Keyword not found")
+    _invalidate_detection_cache()
 
 
 @router.post("/import", response_model=BulkImportResponse)
 def bulk_import(
     request: BulkImportRequest,
-    conn=Depends(get_db),
 ):
     """Bulk import detection keywords."""
-    created = 0
-    updated = 0
-    failed = 0
-    errors: list[str] = []
+    from teamarr.database.detection_keywords import bulk_import_keywords
 
-    # If replacing category, delete existing first
-    if request.replace_category:
-        categories = set(kw.category for kw in request.keywords)
-        for cat in categories:
-            conn.execute("DELETE FROM detection_keywords WHERE category = ?", (cat,))
-            logger.info("[DETECTION_KW] Cleared category %s for replace import", cat)
+    keyword_dicts = [
+        {
+            "category": kw.category,
+            "keyword": kw.keyword,
+            "is_regex": kw.is_regex,
+            "target_value": kw.target_value,
+            "enabled": kw.enabled,
+            "priority": kw.priority,
+            "description": kw.description,
+        }
+        for kw in request.keywords
+    ]
 
-    for kw in request.keywords:
-        try:
-            # Try insert, update on conflict
-            cursor = conn.execute(
-                """INSERT INTO detection_keywords
-                   (category, keyword, is_regex, target_value, enabled, priority, description)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(category, keyword) DO UPDATE SET
-                   is_regex = excluded.is_regex,
-                   target_value = excluded.target_value,
-                   enabled = excluded.enabled,
-                   priority = excluded.priority,
-                   description = excluded.description,
-                   updated_at = CURRENT_TIMESTAMP""",
-                (
-                    kw.category,
-                    kw.keyword,
-                    int(kw.is_regex),
-                    kw.target_value,
-                    int(kw.enabled),
-                    kw.priority,
-                    kw.description,
-                ),
-            )
-            if cursor.rowcount > 0:
-                # Check if it was insert or update
-                existing = conn.execute(
-                    """SELECT created_at, updated_at FROM detection_keywords
-                       WHERE category = ? AND keyword = ?""",
-                    (kw.category, kw.keyword),
-                ).fetchone()
-                if existing and existing["created_at"] == existing["updated_at"]:
-                    created += 1
-                else:
-                    updated += 1
-        except Exception as e:
-            failed += 1
-            errors.append(f"{kw.category}/{kw.keyword}: {e}")
-
-    conn.commit()
-
-    logger.info(
-        "[DETECTION_KW] Bulk import: created=%d updated=%d failed=%d",
-        created,
-        updated,
-        failed,
-    )
-
-    # Invalidate detection service cache
-    from teamarr.services.detection_keywords import DetectionKeywordService
-
-    DetectionKeywordService.invalidate_cache()
+    with get_db() as conn:
+        created, updated, failed, errors = bulk_import_keywords(
+            conn, keyword_dicts, replace_category=request.replace_category
+        )
+    _invalidate_detection_cache()
 
     return BulkImportResponse(
         created=created,
@@ -475,36 +337,14 @@ def bulk_import(
 @router.get("/export")
 def bulk_export(
     category: CategoryType | None = None,
-    conn=Depends(get_db),
 ):
     """Export detection keywords as JSON."""
-    query = "SELECT * FROM detection_keywords"
-    params: list = []
+    from teamarr.database.detection_keywords import export_keywords
 
-    if category:
-        query += " WHERE category = ?"
-        params.append(category)
-
-    query += " ORDER BY category, priority DESC, keyword"
-
-    rows = conn.execute(query, params).fetchall()
-
-    keywords = []
-    for row in rows:
-        keywords.append(
-            {
-                "category": row["category"],
-                "keyword": row["keyword"],
-                "is_regex": bool(row["is_regex"]),
-                "target_value": row["target_value"],
-                "enabled": bool(row["enabled"]),
-                "priority": row["priority"] or 0,
-                "description": row["description"],
-            }
-        )
-
-    return {
-        "exported_at": datetime.now().isoformat(),
-        "count": len(keywords),
-        "keywords": keywords,
-    }
+    with get_db() as conn:
+        keywords = export_keywords(conn, category=category)
+        return {
+            "exported_at": datetime.now().isoformat(),
+            "count": len(keywords),
+            "keywords": keywords,
+        }

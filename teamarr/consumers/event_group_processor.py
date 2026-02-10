@@ -45,7 +45,10 @@ from teamarr.database.groups import (
     EventEPGGroup,
     get_all_group_xmltv,
     get_all_groups,
+    get_enabled_soccer_leagues,
     get_group,
+    get_group_templates,
+    get_template_for_event,
     update_group_stats,
 )
 from teamarr.database.stats import (
@@ -350,6 +353,41 @@ class EventGroupProcessor:
         # This avoids redundant API/cache lookups when multiple groups search the same leagues
         # while ensuring groups that need fresh API data can still get it
         self._shared_events: dict[str, tuple[list[Event], bool]] = {}
+
+    def _resolve_effective_leagues(
+        self, conn: Connection, group: EventEPGGroup
+    ) -> list[str]:
+        """Resolve effective leagues for a group based on soccer_mode.
+
+        Args:
+            conn: Database connection
+            group: Event EPG group
+
+        Returns:
+            List of league codes to use for event fetching/matching.
+            - soccer_mode='all': All enabled soccer leagues
+            - soccer_mode='teams': Leagues discovered from followed teams
+            - soccer_mode='manual' or NULL: group.leagues as-is
+        """
+        if group.soccer_mode == "all":
+            return get_enabled_soccer_leagues(conn)
+
+        if group.soccer_mode == "teams" and group.soccer_followed_teams:
+            # Discover leagues from followed teams using team_cache
+            from teamarr.consumers.cache.queries import CacheQueries
+
+            cache = CacheQueries(self._db_factory)
+            leagues: set[str] = set()
+            for team in group.soccer_followed_teams:
+                provider = team.get("provider", "espn")
+                team_id = team.get("team_id")
+                if team_id:
+                    team_leagues = cache.get_team_leagues(team_id, provider, sport="soccer")
+                    leagues.update(team_leagues)
+            return list(leagues) if leagues else group.leagues
+
+        # 'manual' or NULL use explicit leagues
+        return group.leagues
 
     def process_group(
         self,
@@ -865,14 +903,14 @@ class EventGroupProcessor:
                 return result
 
             # Step 2: Fetch events (use parent's leagues if child has none)
-            leagues = group.leagues
+            leagues = self._resolve_effective_leagues(conn, group)
             if not leagues:
                 # Inherit from parent - need to look up parent
                 from teamarr.database.groups import get_group
 
                 parent = get_group(conn, group.parent_group_id)
                 if parent:
-                    leagues = parent.leagues
+                    leagues = self._resolve_effective_leagues(conn, parent)
 
             events = self._fetch_events(leagues, target_date)
 
@@ -1128,8 +1166,11 @@ class EventGroupProcessor:
         """
         result = ProcessingResult(group_id=group.id, group_name=group.name)
 
-        # Template is required - skip groups without one
-        if group.template_id is None:
+        # Template is required - check both direct assignment and group_templates table
+        group_templates = get_group_templates(conn, group.id)
+        has_template = group.template_id is not None or len(group_templates) > 0
+
+        if not has_template:
             logger.warning(
                 "[EVENT_GROUP_SKIP] Group '%s' (id=%d): no template assigned - "
                 "template is required for channel naming. Skipping group.",
@@ -1144,6 +1185,11 @@ class EventGroupProcessor:
         stats_run = create_run(conn, run_type="event_group", group_id=group.id)
 
         try:
+            # Clear any previously stored XMLTV for this group so that if
+            # processing crashes or produces zero matches, stale rendered
+            # output is never served in the merged EPG.
+            self._store_group_xmltv(conn, group.id, "")
+
             # Step 1: Fetch M3U streams from Dispatcharr
             streams = self._fetch_streams(group)
             result.streams_fetched = len(streams)
@@ -1190,13 +1236,15 @@ class EventGroupProcessor:
                 return result
 
             # Step 2: Fetch events from data providers
-            events = self._fetch_events(group.leagues, target_date)
+            # Resolve effective leagues based on soccer_mode
+            effective_leagues = self._resolve_effective_leagues(conn, group)
+            events = self._fetch_events(effective_leagues, target_date)
             logger.info(
-                f"Fetched {len(events)} events for group '{group.name}' leagues={group.leagues}"
+                f"Fetched {len(events)} events for group '{group.name}' leagues={effective_leagues}"
             )
 
             if not events:
-                result.errors.append(f"No events found for leagues: {group.leagues}")
+                result.errors.append(f"No events found for leagues: {effective_leagues}")
                 result.completed_at = datetime.now()
                 stats_run.complete(status="completed", error="No events found")
                 save_run(conn, stats_run)
@@ -1222,6 +1270,7 @@ class EventGroupProcessor:
                 target_date,
                 stream_progress_callback=stream_progress_callback,
                 status_callback=status_callback,
+                resolved_leagues=effective_leagues,
             )
             result.streams_matched = match_result.matched_count
             result.streams_unmatched = match_result.unmatched_count
@@ -1793,6 +1842,9 @@ class EventGroupProcessor:
         Uses canonical team selection (provider, team_id) for unambiguous matching.
         Filter is set on parent groups and inherited by children.
 
+        When bypass_filter_for_playoffs is enabled, playoff games (season_type='postseason')
+        bypass the team filter entirely.
+
         Args:
             matched_streams: List of {'stream': ..., 'event': ...} dicts
             group: The event group being processed
@@ -1802,7 +1854,9 @@ class EventGroupProcessor:
             Tuple of (filtered_streams, filtered_count)
         """
         # Get effective team filter (from group or parent)
-        include_teams, exclude_teams, mode = self._get_effective_team_filter(group, conn)
+        include_teams, exclude_teams, mode, bypass_playoffs = self._get_effective_team_filter(
+            group, conn
+        )
 
         # No filter configured
         if not include_teams and not exclude_teams:
@@ -1811,6 +1865,7 @@ class EventGroupProcessor:
         filter_list = include_teams if include_teams else exclude_teams
         filtered = []
         filtered_count = 0
+        playoff_bypass_count = 0
 
         # Extract leagues that have teams in the filter
         # Only filter events from leagues with explicit selections
@@ -1821,6 +1876,12 @@ class EventGroupProcessor:
             if not event:
                 # No event - can't filter by team, keep it
                 filtered.append(match)
+                continue
+
+            # Bypass filter for playoff games if setting is enabled
+            if bypass_playoffs and event.season_type == "postseason":
+                filtered.append(match)
+                playoff_bypass_count += 1
                 continue
 
             # Get event's league
@@ -1855,6 +1916,12 @@ class EventGroupProcessor:
                     filtered_count += 1
                     logger.debug(f"Team filter excluded: {event.name} - team in exclude list")
 
+        if playoff_bypass_count > 0:
+            logger.info(
+                "Playoff bypass: %d playoff game(s) included despite team filter",
+                playoff_bypass_count,
+            )
+
         if filtered_count > 0:
             logger.info(
                 "[EVENT_EPG] Team filter: %d streams excluded, %d remaining",
@@ -1868,7 +1935,7 @@ class EventGroupProcessor:
         self,
         group: "EventEPGGroup",
         conn,
-    ) -> tuple[list[dict] | None, list[dict] | None, str]:
+    ) -> tuple[list[dict] | None, list[dict] | None, str, bool]:
         """Get team filter, inheriting from parent if needed, with settings fallback.
 
         Priority chain:
@@ -1878,27 +1945,41 @@ class EventGroupProcessor:
         4. No filtering (default)
 
         Returns:
-            Tuple of (include_teams, exclude_teams, mode)
+            Tuple of (include_teams, exclude_teams, mode, bypass_filter_for_playoffs)
         """
         from teamarr.database.groups import get_group
         from teamarr.database.settings import get_team_filter_settings
 
+        # Get global settings for defaults
+        settings = get_team_filter_settings(conn)
+
+        # Determine bypass_filter_for_playoffs (group override -> global default)
+        bypass_playoffs = group.bypass_filter_for_playoffs
+        if bypass_playoffs is None and group.parent_group_id:
+            parent = get_group(conn, group.parent_group_id)
+            if parent:
+                bypass_playoffs = parent.bypass_filter_for_playoffs
+        if bypass_playoffs is None:
+            bypass_playoffs = settings.bypass_filter_for_playoffs
+
         # If group has its own filter, use it
         if group.include_teams or group.exclude_teams:
-            return group.include_teams, group.exclude_teams, group.team_filter_mode
+            return group.include_teams, group.exclude_teams, group.team_filter_mode, bypass_playoffs
 
         # Otherwise inherit from parent
         if group.parent_group_id:
             parent = get_group(conn, group.parent_group_id)
             if parent and (parent.include_teams or parent.exclude_teams):
-                return parent.include_teams, parent.exclude_teams, parent.team_filter_mode
+                return (
+                    parent.include_teams, parent.exclude_teams,
+                    parent.team_filter_mode, bypass_playoffs
+                )
 
         # Fall back to global settings default
-        settings = get_team_filter_settings(conn)
         if settings.include_teams or settings.exclude_teams:
-            return settings.include_teams, settings.exclude_teams, settings.mode
+            return settings.include_teams, settings.exclude_teams, settings.mode, bypass_playoffs
 
-        return None, None, "include"
+        return None, None, "include", bypass_playoffs
 
     def _team_matches_filter(
         self,
@@ -1962,7 +2043,7 @@ class EventGroupProcessor:
         from teamarr.database.channels import get_managed_channels_for_group
 
         # Get effective team filter (group -> parent -> global)
-        include_teams, exclude_teams, mode = self._get_effective_team_filter(group, conn)
+        include_teams, exclude_teams, mode, _bypass = self._get_effective_team_filter(group, conn)
 
         if not include_teams and not exclude_teams:
             return 0  # No filter configured
@@ -2327,12 +2408,19 @@ class EventGroupProcessor:
             "leagues": group.leagues,  # len > 1 means multi-league
             "m3u_account_id": group.m3u_account_id,
             "m3u_account_name": group.m3u_account_name,
+            "stream_profile_id": group.stream_profile_id,
         }
 
         # Load template from database if configured
+        # Check both direct template_id and group_templates table
         template_config = None
-        if group.template_id:
-            template_config = self._load_event_template(conn, group.template_id)
+        template_id = group.template_id
+        if not template_id:
+            # Try to get default template from group_templates (sports/leagues both NULL)
+            # Using empty strings to trigger fallback to default template
+            template_id = get_template_for_event(conn, group.id, "", "")
+        if template_id:
+            template_config = self._load_event_template(conn, template_id)
 
         combined_result = StreamProcessResult()
 
@@ -2428,21 +2516,116 @@ class EventGroupProcessor:
             return "", 0, 0, 0, 0
 
         # Load template options if configured
+        # Check both direct template_id and group_templates table
         options = EventEPGOptions()
         filler_config: EventFillerConfig | None = None
         template_db = None
 
-        if group.template_id:
-            template_config = self._load_event_template(conn, group.template_id)
+        # Get default template (fallback when no sport/league-specific template matches)
+        default_template_id = group.template_id
+        if not default_template_id:
+            # Try to get default template from group_templates (sports/leagues both NULL)
+            default_template_id = get_template_for_event(conn, group.id, "", "")
+
+        if default_template_id:
+            template_config = self._load_event_template(conn, default_template_id)
             if template_config:
                 options.template = template_config
 
-            # Load raw template for filler config
+            # Load raw template for filler config (used as fallback)
             from teamarr.database.templates import get_template
 
-            template_db = get_template(conn, group.template_id)
+            template_db = get_template(conn, default_template_id)
             if template_db and (template_db.pregame_enabled or template_db.postgame_enabled):
                 filler_config = template_to_event_filler_config(template_db)
+
+        # Resolve per-event templates based on sport/league specificity
+        # This allows different templates for different sports/leagues in multi-sport groups
+        template_cache: dict = {}  # {template_id: EventTemplateConfig}
+        filler_cache: dict[int, EventFillerConfig | None] = {}  # {template_id: filler_config}
+
+        # Load exception keywords for stream annotation (used by EPG generator)
+        from teamarr.database.channels import check_exception_keyword, get_exception_keywords
+
+        exception_keywords = get_exception_keywords(conn)
+
+        # Log template resolution context for multi-template groups
+        from teamarr.database.groups import get_group_templates
+
+        group_templates = get_group_templates(conn, group.id)
+        if len(group_templates) > 1:
+            logger.info(
+                "[EVENT_EPG] Multi-template group %d (%s): default=%s, templates=%s",
+                group.id,
+                group.name,
+                default_template_id,
+                [(t.template_id, t.sports, t.leagues) for t in group_templates],
+            )
+
+        for match in matched_streams:
+            event = match.get("event")
+            if not event:
+                continue
+
+            event_sport = getattr(event, "sport", "") or ""
+            event_league = getattr(event, "league", "") or ""
+
+            # Resolve the best template for this specific event
+            event_template_id = get_template_for_event(
+                conn, group.id, event_sport, event_league
+            )
+
+            # Log template resolution for multi-template groups
+            if len(group_templates) > 1:
+                logger.info(
+                    "[EVENT_EPG] Template resolution: event=%s sport=%r league=%r "
+                    "-> template=%s (default=%s)",
+                    event.id,
+                    event_sport,
+                    event_league,
+                    event_template_id,
+                    default_template_id,
+                )
+
+            # Store resolved template ID on each match for filler lookup
+            match["_event_template_id"] = event_template_id
+
+            if event_template_id and event_template_id != default_template_id:
+                # Use cached template if already loaded
+                if event_template_id not in template_cache:
+                    event_template_config = self._load_event_template(conn, event_template_id)
+                    if event_template_config:
+                        template_cache[event_template_id] = event_template_config
+
+                if event_template_id in template_cache:
+                    match["_event_template"] = template_cache[event_template_id]
+                    logger.debug(
+                        "[EVENT_EPG] Using sport/league-specific template %d for %s/%s event",
+                        event_template_id,
+                        event_sport,
+                        event_league,
+                    )
+
+            # Build per-event filler config cache
+            if event_template_id and event_template_id not in filler_cache:
+                from teamarr.database.templates import get_template
+
+                tmpl = get_template(conn, event_template_id)
+                if tmpl and (tmpl.pregame_enabled or tmpl.postgame_enabled):
+                    filler_cache[event_template_id] = template_to_event_filler_config(tmpl)
+                else:
+                    filler_cache[event_template_id] = None
+
+            # Annotate match with its per-event filler config
+            if event_template_id and event_template_id in filler_cache:
+                match["_event_filler_config"] = filler_cache[event_template_id]
+
+            # Annotate match with exception keyword for EPG channel name parity
+            stream_name = match.get("stream", {}).get("name", "")
+            if stream_name and exception_keywords:
+                keyword_label, _ = check_exception_keyword(stream_name, exception_keywords)
+                if keyword_label:
+                    match["_exception_keyword"] = keyword_label
 
         # Load sport durations and lookback from settings
         options.sport_durations = self._load_sport_durations(conn)
@@ -2461,8 +2644,11 @@ class EventGroupProcessor:
         pregame_count = 0
         postgame_count = 0
 
-        # Generate filler if enabled in template
-        if filler_config:
+        # Generate filler if any template (default or per-event) has filler enabled
+        any_filler = filler_config or any(
+            fc for fc in filler_cache.values() if fc is not None
+        )
+        if any_filler:
             filler_result = self._generate_filler_for_streams(
                 matched_streams,
                 filler_config,
@@ -2559,15 +2745,22 @@ class EventGroupProcessor:
             if not event:
                 continue
 
+            # Use per-event filler config if available, fall back to default
+            stream_filler_config = stream_match.get("_event_filler_config") or filler_config
+            if not stream_filler_config:
+                continue  # No filler config for this event's template
+
             # UFC segment support: extract segment info if present
             segment = stream_match.get("segment")
             segment_start = stream_match.get("segment_start")
             segment_end = stream_match.get("segment_end")
 
             # Use consistent tvg_id matching EventEPGGenerator and ChannelLifecycleService
+            # Include exception_keyword for keyword-unique EPG channels
             from teamarr.consumers.lifecycle import generate_event_tvg_id
 
-            channel_id = generate_event_tvg_id(event.id, event.provider, segment)
+            exception_keyword = stream_match.get("_exception_keyword")
+            channel_id = generate_event_tvg_id(event.id, event.provider, segment, exception_keyword)
 
             # For UFC segments, override event times with segment-specific times
             if segment_start and segment_end:
@@ -2595,8 +2788,9 @@ class EventGroupProcessor:
                 filler_result = filler_generator.generate_with_counts(
                     event=use_event,
                     channel_id=channel_id,
-                    config=filler_config,
+                    config=stream_filler_config,
                     options=use_options,
+                    card_segment=segment,
                 )
                 result.programmes.extend(filler_result.programmes)
                 result.pregame_count += filler_result.pregame_count

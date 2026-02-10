@@ -843,7 +843,7 @@ def get_all_auto_channels_globally_sorted(conn: Connection) -> list[dict]:
         sport_pri = sport_order.get(sport_lower, 9999)
         league_pri = league_order.get((sport_lower, league_lower), 9999)
 
-        # Parse event date for sorting
+        # Parse event date for sorting (always naive UTC for consistent comparison)
         if event_date_str:
             try:
                 # Handle various formats
@@ -851,6 +851,8 @@ def get_all_auto_channels_globally_sorted(conn: Connection) -> list[dict]:
                     event_date = datetime.fromisoformat(str(event_date_str).replace("Z", "+00:00"))
                 else:
                     event_date = datetime.strptime(str(event_date_str), "%Y-%m-%d %H:%M:%S")
+                # Strip timezone info for consistent comparison
+                event_date = event_date.replace(tzinfo=None)
             except (ValueError, TypeError):
                 event_date = datetime.max
         else:

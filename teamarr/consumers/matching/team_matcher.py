@@ -7,6 +7,7 @@ Supports two modes:
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any
@@ -744,7 +745,9 @@ class TeamMatcher:
         This prevents "Marist vs Sacred Heart" from matching "Jessup vs Sacred Heart"
         just because one team name overlaps.
 
-        If a team name contains '|', tries both sides and uses the best match.
+        Uses a two-stage approach:
+        1. First, try matching with team names as-is (preserves "Miami (OH)" etc.)
+        2. If no match, strip parentheticals and retry (handles "Team (Available outside...)")
 
         Args:
             team1: First extracted team name (normalized)
@@ -755,9 +758,51 @@ class TeamMatcher:
         Returns:
             Tuple of (method, confidence) if matched, None otherwise
         """
-        # Apply threshold based on whether date validation is available
+        # Stage 1: Try matching with original names
+        result = self._score_teams_against_event(team1, team2, event)
+        if result:
+            return result
 
-        # Normalize event team names for comparison (include short name + abbrev patterns)
+        # Stage 2: If no match and parentheticals exist, strip them and retry
+        # This handles noise like "(Available outside Ottawa Region)" without
+        # breaking legitimate team disambiguators like "Miami (OH)"
+        t1_stripped = self._strip_parentheticals(team1) if team1 and "(" in team1 else team1
+        t2_stripped = self._strip_parentheticals(team2) if team2 and "(" in team2 else team2
+
+        if t1_stripped != team1 or t2_stripped != team2:
+            return self._score_teams_against_event(t1_stripped, t2_stripped, event)
+
+        return None
+
+    def _strip_parentheticals(self, name: str) -> str:
+        """Strip parenthetical content from team name.
+
+        Used as fallback when matching fails with parentheticals intact.
+        Example: "Ottawa (Available outside region)" → "Ottawa"
+        """
+        return re.sub(r"\s*\([^)]*\)", "", name).strip()
+
+    def _score_teams_against_event(
+        self,
+        team1: str | None,
+        team2: str | None,
+        event: Event,
+    ) -> tuple[MatchMethod, float] | None:
+        """Score team names against event teams.
+
+        When both teams are extracted, requires BOTH to match different event teams.
+        Uses pattern-based matching with short names and abbreviations for better
+        European football support.
+
+        Args:
+            team1: First extracted team name
+            team2: Second extracted team name
+            event: Event to match against
+
+        Returns:
+            Tuple of (method, confidence) if matched, None otherwise
+        """
+        # Generate patterns for event teams (includes short name + abbrev patterns)
         home_patterns = self._fuzzy.generate_team_patterns(event.home_team)
         away_patterns = self._fuzzy.generate_team_patterns(event.away_team)
 

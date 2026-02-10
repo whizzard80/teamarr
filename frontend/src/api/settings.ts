@@ -100,6 +100,7 @@ export interface TeamFilterSettings {
   include_teams: TeamFilterEntry[] | null
   exclude_teams: TeamFilterEntry[] | null
   mode: "include" | "exclude"
+  bypass_filter_for_playoffs: boolean
 }
 
 export interface TeamFilterSettingsUpdate {
@@ -109,6 +110,7 @@ export interface TeamFilterSettingsUpdate {
   mode?: "include" | "exclude"
   clear_include_teams?: boolean
   clear_exclude_teams?: boolean
+  bypass_filter_for_playoffs?: boolean
 }
 
 export interface ChannelNumberingSettings {
@@ -424,5 +426,32 @@ export async function updateUpdateCheckSettings(
 // Check for updates
 export async function checkForUpdates(force: boolean = false): Promise<UpdateInfo> {
   return api.get(`/updates/check?force=${force}`)
+}
+
+// Gold Zone Settings (Olympics Special Feature)
+export interface GoldZoneSettings {
+  enabled: boolean
+  channel_number: number | null
+  channel_group_id: number | null
+  channel_profile_ids: (number | string)[] | null
+  stream_profile_id: number | null
+}
+
+export interface GoldZoneSettingsUpdate {
+  enabled?: boolean
+  channel_number?: number | null
+  channel_group_id?: number | null
+  channel_profile_ids?: (number | string)[] | null
+  stream_profile_id?: number | null
+}
+
+export async function getGoldZoneSettings(): Promise<GoldZoneSettings> {
+  return api.get("/settings/gold-zone")
+}
+
+export async function updateGoldZoneSettings(
+  data: GoldZoneSettingsUpdate
+): Promise<GoldZoneSettings> {
+  return api.put("/settings/gold-zone", data)
 }
 

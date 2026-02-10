@@ -548,8 +548,12 @@ def expand_ufc_segments(
         event = match.get("event")
         stream = match.get("stream", {})
 
-        # Non-UFC events pass through unchanged
+        # Non-UFC events pass through — normalize card_segment → segment
         if not is_ufc_event(event):
+            card_seg = match.get("card_segment")
+            if card_seg and "segment" not in match:
+                match["segment"] = card_seg
+                match["segment_display"] = SEGMENT_DISPLAY_NAMES.get(card_seg, "")
             result.append(match)
             continue
 

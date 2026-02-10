@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS settings (
     default_exclude_teams JSON,                  -- Global exclude filter (same format)
     default_team_filter_mode TEXT DEFAULT 'include' CHECK(default_team_filter_mode IN ('include', 'exclude')),
     team_filter_enabled BOOLEAN DEFAULT 1,       -- Master toggle to enable/disable team filtering
+    default_bypass_filter_for_playoffs BOOLEAN DEFAULT 0, -- Include all playoff games regardless of team filter
 
     -- Scheduled Generation
     cron_expression TEXT DEFAULT '0 * * * *',    -- Cron for auto EPG generation
@@ -207,8 +208,8 @@ CREATE TABLE IF NOT EXISTS settings (
     team_cache_refresh_frequency TEXT DEFAULT 'weekly',
 
     -- API
-    api_timeout INTEGER DEFAULT 10,
-    api_retry_count INTEGER DEFAULT 3,
+    api_timeout INTEGER DEFAULT 30,
+    api_retry_count INTEGER DEFAULT 5,
 
     -- TheSportsDB API (optional premium key for higher limits)
     -- If not set, uses free API key with 30 req/min and 10 result limits
@@ -302,8 +303,23 @@ CREATE TABLE IF NOT EXISTS settings (
     update_dev_branch TEXT DEFAULT 'dev',                -- Branch to check for dev builds
     update_auto_detect_branch BOOLEAN DEFAULT 1,         -- Auto-detect branch from version string
 
+    -- Scheduled Backup Settings
+    -- Automatic database backups with rotation and protection
+    scheduled_backup_enabled BOOLEAN DEFAULT 0,          -- Master toggle for scheduled backups
+    scheduled_backup_cron TEXT DEFAULT '0 3 * * *',      -- Cron expression (default: 3 AM daily)
+    scheduled_backup_max_count INTEGER DEFAULT 7,        -- Maximum backups to keep (rotation)
+    scheduled_backup_path TEXT DEFAULT './data/backups', -- Directory for backup files
+
+    -- Gold Zone (Olympics Special Feature)
+    -- Consolidates all "Gold Zone" streams into a single channel with external EPG
+    gold_zone_enabled BOOLEAN DEFAULT 0,
+    gold_zone_channel_number INTEGER,
+    gold_zone_channel_group_id INTEGER,
+    gold_zone_channel_profile_ids TEXT,    -- JSON array of profile IDs
+    gold_zone_stream_profile_id INTEGER,
+
     -- Schema Version
-    schema_version INTEGER DEFAULT 47
+    schema_version INTEGER DEFAULT 56
 );
 
 -- Insert default settings
@@ -334,6 +350,9 @@ CREATE TABLE IF NOT EXISTS event_epg_groups (
 
     -- What to scan
     leagues JSON NOT NULL,                   -- ["nfl", "nba"] - leagues to scan for events
+    soccer_mode TEXT DEFAULT NULL            -- NULL (non-soccer), 'all' (auto-subscribe), 'teams' (follow teams), 'manual' (explicit)
+        CHECK(soccer_mode IS NULL OR soccer_mode IN ('all', 'teams', 'manual')),
+    soccer_followed_teams JSON DEFAULT NULL, -- [{provider, team_id, name}] for teams mode - auto-discovers their competitions
 
     -- Template
     template_id INTEGER,
@@ -401,6 +420,7 @@ CREATE TABLE IF NOT EXISTS event_epg_groups (
     exclude_teams JSON,                          -- Teams to exclude: same format
     team_filter_mode TEXT DEFAULT 'include'      -- 'include' (whitelist) or 'exclude' (blacklist)
         CHECK(team_filter_mode IN ('include', 'exclude')),
+    bypass_filter_for_playoffs BOOLEAN,          -- NULL=use default, 0=disabled, 1=enabled (include all playoff games)
 
     -- Processing Stats (updated by EPG generation)
     -- Three categories: FILTERED (pre-match), FAILED (match attempted), EXCLUDED (matched but excluded)
@@ -711,6 +731,10 @@ INSERT OR REPLACE INTO leagues (league_code, provider, provider_league_id, provi
     ('nhl', 'espn', 'hockey/nhl', NULL, 'National Hockey League', 'hockey', 'https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png', NULL, 1, 'NHL', 'nhl', 'team_vs_team', 'NHL Hockey', NULL, NULL),
     ('mens-college-hockey', 'espn', 'hockey/mens-college-hockey', NULL, 'NCAA Men''s Ice Hockey', 'hockey', 'https://www.ncaa.com/modules/custom/casablanca_core/img/sportbanners/icehockey.png', NULL, 1, 'NCAA Hockey', 'ncaah', 'team_vs_team', 'College Hockey', NULL, NULL),
     ('womens-college-hockey', 'espn', 'hockey/womens-college-hockey', NULL, 'NCAA Women''s Ice Hockey', 'hockey', 'https://www.ncaa.com/modules/custom/casablanca_core/img/sportbanners/icehockey.png', NULL, 1, 'NCAA W Hockey', 'ncaawh', 'team_vs_team', 'Women''s College Hockey', NULL, NULL),
+
+    -- Hockey - Olympics (ESPN)
+    ('olympics-mens-ice-hockey', 'espn', 'hockey/olympics-mens-ice-hockey', NULL, 'Men''s Ice Hockey - Olympics', 'hockey', '/olympics-2026.png', NULL, 1, 'Olympic Hockey', 'olymh', 'team_vs_team', NULL, NULL, NULL),
+    ('olympics-womens-ice-hockey', 'espn', 'hockey/olympics-womens-ice-hockey', NULL, 'Women''s Ice Hockey - Olympics', 'hockey', '/olympics-2026.png', NULL, 1, 'Olympic W Hockey', 'olywh', 'team_vs_team', NULL, NULL, NULL),
 
     -- Hockey - CHL/Canadian Major Junior (HockeyTech)
     ('chl', 'hockeytech', 'chl', NULL, 'Canadian Hockey League', 'hockey', 'https://raw.githubusercontent.com/sethwv/game-thumbs/dev/assets/CHL.png', NULL, 1, 'CHL', 'chl', 'team_vs_team', NULL, NULL, NULL),

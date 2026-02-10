@@ -616,7 +616,9 @@ export function Channels() {
                     <TableCell>
                       <div className="max-w-xs">
                         <div className="truncate text-sm">
-                          {channel.away_team} @ {channel.home_team}
+                          {channel.home_team || channel.away_team
+                            ? `${channel.away_team ?? ""} @ ${channel.home_team ?? ""}`
+                            : channel.event_name ?? "-"}
                         </div>
                         {channel.event_date && (
                           <div className="text-xs text-muted-foreground">
@@ -709,7 +711,9 @@ export function Channels() {
                     </TableCell>
                     <TableCell>
                       <div className="max-w-xs truncate text-sm">
-                        {channel.away_team} @ {channel.home_team}
+                        {channel.home_team || channel.away_team
+                          ? `${channel.away_team ?? ""} @ ${channel.home_team ?? ""}`
+                          : channel.event_name ?? "-"}
                       </div>
                     </TableCell>
                     <TableCell className="text-sm">

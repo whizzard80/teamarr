@@ -219,7 +219,7 @@ class M3UManager:
                 return []
 
         # Build query params
-        params = ["page_size=1000"]
+        params = ["page=1", "page_size=1000"]
         if group_name:
             params.append(f"channel_group_name={urllib.parse.quote(group_name)}")
         if account_id is not None:

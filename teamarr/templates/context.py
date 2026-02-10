@@ -4,7 +4,7 @@ These typed dataclasses hold all data needed for template variable resolution.
 Using dataclasses instead of dicts provides type safety and IDE support.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from teamarr.core import Event, Team, TeamStats
 
@@ -85,3 +85,7 @@ class TemplateContext:
     # Related games for suffix resolution
     next_game: GameContext | None = None  # For .next suffix
     last_game: GameContext | None = None  # For .last suffix
+
+    # Extra variables injected at resolution time (override registered extractors)
+    # Used for values that aren't derived from event data (e.g., exception_keyword)
+    extra_vars: dict[str, str] = field(default_factory=dict)

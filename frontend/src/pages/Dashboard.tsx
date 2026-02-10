@@ -386,7 +386,7 @@ export function Dashboard() {
       {/* EPG Generation History */}
       {history && history.length > 0 && (
         <div>
-          <h2 className="text-lg font-semibold mb-3">EPG Generation History</h2>
+          <h2 className="text-lg font-semibold mb-3">EPG Generation History <span className="text-sm font-normal text-muted-foreground">(last 30 days)</span></h2>
           <div className="border rounded-lg overflow-hidden">
             <Table>
               <TableHeader>

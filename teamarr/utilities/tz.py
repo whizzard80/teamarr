@@ -6,6 +6,7 @@ All datetime display, formatting, and conversion should use these functions.
 Display settings (time_format, show_timezone) are read from user configuration.
 """
 
+import platform
 from datetime import UTC, datetime
 
 from teamarr.config import (
@@ -14,6 +15,9 @@ from teamarr.config import (
     get_user_timezone,
     get_user_timezone_str,
 )
+
+# Windows uses %#d for no-padding day, Unix uses %-d
+_IS_WINDOWS = platform.system() == "Windows"
 
 __all__ = [
     "get_user_timezone",
@@ -27,7 +31,27 @@ __all__ = [
     "format_date_short",
     "format_datetime_xmltv",
     "get_timezone_abbrev",
+    "strftime_compat",
 ]
+
+
+def strftime_compat(dt: datetime, fmt: str) -> str:
+    """Platform-compatible strftime wrapper.
+
+    Handles the difference between Unix (%-d) and Windows (%#d) for
+    no-padding format specifiers.
+
+    Args:
+        dt: Datetime to format
+        fmt: Format string using Unix-style %-d, %-I, etc.
+
+    Returns:
+        Formatted string (works on both Windows and Unix)
+    """
+    if _IS_WINDOWS:
+        # Convert Unix no-padding specifiers to Windows equivalents
+        fmt = fmt.replace("%-", "%#")
+    return dt.strftime(fmt)
 
 
 def now_user() -> datetime:
@@ -89,7 +113,7 @@ def format_time(dt: datetime, include_tz: bool | None = None) -> str:
         time_str = local_dt.strftime("%H:%M")
     else:
         # 12-hour format
-        time_str = local_dt.strftime("%-I:%M %p")
+        time_str = strftime_compat(local_dt, "%-I:%M %p")
 
     # Determine if we should show timezone
     show_tz = include_tz if include_tz is not None else get_show_timezone()
@@ -110,7 +134,7 @@ def format_date(dt: datetime) -> str:
         Formatted date string
     """
     local_dt = to_user_tz(dt)
-    return local_dt.strftime("%B %-d, %Y")
+    return strftime_compat(local_dt, "%B %-d, %Y")
 
 
 def format_date_short(dt: datetime) -> str:
@@ -123,7 +147,7 @@ def format_date_short(dt: datetime) -> str:
         Formatted short date string
     """
     local_dt = to_user_tz(dt)
-    return local_dt.strftime("%b %-d")
+    return strftime_compat(local_dt, "%b %-d")
 
 
 def format_datetime_xmltv(dt: datetime) -> str:

@@ -63,21 +63,3 @@ export function useThemedLogo(
   return logoUrl || logoUrlDark || null
 }
 
-/**
- * Helper function (non-hook) to get themed logo from stored theme.
- * Use when you can't use hooks (e.g., in event handlers).
- */
-export function getThemedLogoUrl(
-  logoUrl: string | null | undefined,
-  logoUrlDark: string | null | undefined
-): string | null {
-  if (!logoUrl && !logoUrlDark) return null
-
-  const isDark = document.documentElement.classList.contains("dark")
-
-  if (isDark && logoUrlDark) {
-    return logoUrlDark
-  }
-
-  return logoUrl || logoUrlDark || null
-}

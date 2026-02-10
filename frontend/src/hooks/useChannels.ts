@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   listManagedChannels,
-  getManagedChannel,
   deleteManagedChannel,
   syncLifecycle,
   getReconciliationStatus,
@@ -14,14 +13,6 @@ export function useManagedChannels(groupId?: number, includeDeleted = false) {
     queryKey: ["managedChannels", { groupId, includeDeleted }],
     queryFn: () => listManagedChannels(groupId, includeDeleted),
     refetchInterval: 30000, // Refresh every 30s
-  })
-}
-
-export function useManagedChannel(channelId: number) {
-  return useQuery({
-    queryKey: ["managedChannel", channelId],
-    queryFn: () => getManagedChannel(channelId),
-    enabled: channelId > 0,
   })
 }
 

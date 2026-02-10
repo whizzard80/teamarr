@@ -20,6 +20,8 @@ class EventEPGGroup:
     name: str
     display_name: str | None = None  # Optional display name override for UI
     leagues: list[str] = field(default_factory=list)
+    soccer_mode: str | None = None  # NULL (non-soccer), 'all', 'teams', 'manual'
+    soccer_followed_teams: list[dict] | None = None  # [{provider, team_id, name}] for teams mode
     group_mode: str = "single"  # "single" or "multi" - persisted to preserve user intent
     template_id: int | None = None
     channel_start_number: int | None = None
@@ -64,6 +66,7 @@ class EventEPGGroup:
     include_teams: list[dict] | None = None
     exclude_teams: list[dict] | None = None
     team_filter_mode: str = "include"
+    bypass_filter_for_playoffs: bool | None = None  # NULL=use default, True/False=override
     # Processing stats by category (FILTERED / FAILED / EXCLUDED)
     filtered_stale: int = 0  # FILTERED: Stream marked as stale in Dispatcharr
     filtered_include_regex: int = 0  # FILTERED: Didn't match include regex
@@ -122,6 +125,10 @@ def _row_to_group(row) -> EventEPGGroup:
         name=row["name"],
         display_name=row["display_name"] if "display_name" in row.keys() else None,
         leagues=leagues,
+        soccer_mode=row["soccer_mode"] if "soccer_mode" in row.keys() else None,
+        soccer_followed_teams=json.loads(row["soccer_followed_teams"])
+        if "soccer_followed_teams" in row.keys() and row["soccer_followed_teams"]
+        else None,
         group_mode=row["group_mode"] if "group_mode" in row.keys() else "single",
         template_id=row["template_id"],
         channel_start_number=row["channel_start_number"],
@@ -183,6 +190,12 @@ def _row_to_group(row) -> EventEPGGroup:
         include_teams=json.loads(row["include_teams"]) if row["include_teams"] else None,
         exclude_teams=json.loads(row["exclude_teams"]) if row["exclude_teams"] else None,
         team_filter_mode=row["team_filter_mode"] if "team_filter_mode" in row.keys() else "include",
+        bypass_filter_for_playoffs=(
+            bool(row["bypass_filter_for_playoffs"])
+            if "bypass_filter_for_playoffs" in row.keys()
+            and row["bypass_filter_for_playoffs"] is not None
+            else None
+        ),
         # Processing stats by category (FILTERED / FAILED / EXCLUDED)
         filtered_stale=row["filtered_stale"] if "filtered_stale" in row.keys() else 0,
         filtered_include_regex=row["filtered_include_regex"] or 0,
@@ -306,6 +319,23 @@ def get_groups_for_league(conn: Connection, league: str) -> list[EventEPGGroup]:
     return groups
 
 
+def get_enabled_soccer_leagues(conn: Connection) -> list[str]:
+    """Get all enabled soccer league codes.
+
+    Used by soccer_mode='all' to dynamically include all soccer leagues.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        List of enabled soccer league codes (e.g., ['eng.1', 'esp.1', 'uefa.champions'])
+    """
+    cursor = conn.execute(
+        "SELECT league_code FROM leagues WHERE sport = 'soccer' AND enabled = 1"
+    )
+    return [row["league_code"] for row in cursor.fetchall()]
+
+
 # =============================================================================
 # CREATE OPERATIONS
 # =============================================================================
@@ -316,6 +346,8 @@ def create_group(
     name: str,
     leagues: list[str],
     display_name: str | None = None,
+    soccer_mode: str | None = None,
+    soccer_followed_teams: list[dict] | None = None,
     group_mode: str = "single",
     template_id: int | None = None,
     channel_start_number: int | None = None,
@@ -397,11 +429,11 @@ def create_group(
 
     cursor = conn.execute(
         """INSERT INTO event_epg_groups (
-            name, display_name, leagues, group_mode, template_id, channel_start_number,
-            channel_group_id, channel_group_mode, channel_profile_ids, stream_profile_id,
-            stream_timezone, duplicate_event_handling, channel_assignment_mode, sort_order,
-            total_stream_count, parent_group_id, m3u_group_id, m3u_group_name,
-            m3u_account_id, m3u_account_name,
+            name, display_name, leagues, soccer_mode, soccer_followed_teams, group_mode, template_id,
+            channel_start_number, channel_group_id, channel_group_mode, channel_profile_ids,
+            stream_profile_id, stream_timezone, duplicate_event_handling,
+            channel_assignment_mode, sort_order, total_stream_count, parent_group_id,
+            m3u_group_id, m3u_group_name, m3u_account_id, m3u_account_name,
             stream_include_regex, stream_include_regex_enabled,
             stream_exclude_regex, stream_exclude_regex_enabled,
             custom_regex_teams, custom_regex_teams_enabled,
@@ -413,11 +445,13 @@ def create_group(
             skip_builtin_filter,
             include_teams, exclude_teams, team_filter_mode,
             channel_sort_order, overlap_handling, enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",  # noqa: E501
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",  # noqa: E501
         (
             name,
             display_name,
             json.dumps(leagues),
+            soccer_mode,
+            json.dumps(soccer_followed_teams) if soccer_followed_teams else None,
             group_mode,
             template_id,
             channel_start_number,
@@ -476,6 +510,8 @@ def update_group(
     name: str | None = None,
     display_name: str | None = None,
     leagues: list[str] | None = None,
+    soccer_mode: str | None = None,
+    soccer_followed_teams: list[dict] | None = None,
     group_mode: str | None = None,
     template_id: int | None = None,
     channel_start_number: int | None = None,
@@ -543,6 +579,8 @@ def update_group(
     clear_custom_regex_event_name: bool = False,
     clear_include_teams: bool = False,
     clear_exclude_teams: bool = False,
+    clear_soccer_mode: bool = False,
+    clear_soccer_followed_teams: bool = False,
 ) -> bool:
     """Update an event EPG group.
 
@@ -589,6 +627,18 @@ def update_group(
     if leagues is not None:
         updates.append("leagues = ?")
         values.append(json.dumps(leagues))
+
+    if soccer_mode is not None:
+        updates.append("soccer_mode = ?")
+        values.append(soccer_mode)
+    elif clear_soccer_mode:
+        updates.append("soccer_mode = NULL")
+
+    if soccer_followed_teams is not None:
+        updates.append("soccer_followed_teams = ?")
+        values.append(json.dumps(soccer_followed_teams))
+    elif clear_soccer_followed_teams:
+        updates.append("soccer_followed_teams = NULL")
 
     if group_mode is not None:
         updates.append("group_mode = ?")
@@ -1181,6 +1231,62 @@ def promote_to_parent(conn: Connection, group_id: int) -> dict:
 # =============================================================================
 
 
+def get_group_template_counts(conn: Connection) -> dict[int, int]:
+    """Get template assignment counts for all groups.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        Dict mapping group_id to count of template assignments
+    """
+    cursor = conn.execute(
+        "SELECT group_id, COUNT(*) as count FROM group_templates GROUP BY group_id"
+    )
+    return {row["group_id"]: row["count"] for row in cursor.fetchall()}
+
+
+def reorder_groups(conn: Connection, items: list[tuple[int, int]]) -> int:
+    """Reorder groups by updating sort_order.
+
+    Args:
+        conn: Database connection
+        items: List of (sort_order, group_id) tuples
+
+    Returns:
+        Number of groups updated
+    """
+    updated = 0
+    for sort_order, group_id in items:
+        conn.execute(
+            "UPDATE event_epg_groups SET sort_order = ? WHERE id = ?",
+            (sort_order, group_id),
+        )
+        updated += 1
+    conn.commit()
+    return updated
+
+
+def get_existing_group_ids(conn: Connection, group_ids: list[int]) -> set[int]:
+    """Check which group IDs exist in the database.
+
+    Args:
+        conn: Database connection
+        group_ids: List of group IDs to check
+
+    Returns:
+        Set of IDs that exist
+    """
+    if not group_ids:
+        return set()
+    placeholders = ",".join("?" * len(group_ids))
+    rows = conn.execute(
+        f"SELECT id FROM event_epg_groups WHERE id IN ({placeholders})",
+        group_ids,
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
 def get_group_channel_count(conn: Connection, group_id: int) -> int:
     """Get count of managed channels for a group.
 
@@ -1296,6 +1402,27 @@ def get_group_xmltv(conn: Connection, group_id: int) -> str | None:
     return row["xmltv_content"] if row else None
 
 
+def get_group_xmltv_with_metadata(
+    conn: Connection, group_id: int
+) -> tuple[str, str] | None:
+    """Get stored XMLTV content and metadata for a group.
+
+    Args:
+        conn: Database connection
+        group_id: Group ID
+
+    Returns:
+        Tuple of (xmltv_content, updated_at) or None if not found
+    """
+    row = conn.execute(
+        "SELECT xmltv_content, updated_at FROM event_epg_xmltv WHERE group_id = ?",
+        (group_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return (row["xmltv_content"], row["updated_at"] or "")
+
+
 def get_all_group_xmltv(conn: Connection, group_ids: list[int] | None = None) -> list[str]:
     """Get stored XMLTV content for multiple groups.
 
@@ -1408,6 +1535,40 @@ def _row_to_group_template(row) -> GroupTemplate:
     )
 
 
+def get_group_template_by_id(
+    conn: Connection,
+    assignment_id: int,
+    group_id: int | None = None,
+) -> GroupTemplate | None:
+    """Get a single group_template assignment by ID.
+
+    Args:
+        conn: Database connection
+        assignment_id: Assignment ID
+        group_id: Optional group_id to verify ownership
+
+    Returns:
+        GroupTemplate or None if not found
+    """
+    if group_id is not None:
+        row = conn.execute(
+            """SELECT gt.*, t.name as template_name
+               FROM group_templates gt
+               LEFT JOIN templates t ON gt.template_id = t.id
+               WHERE gt.id = ? AND gt.group_id = ?""",
+            (assignment_id, group_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT gt.*, t.name as template_name
+               FROM group_templates gt
+               LEFT JOIN templates t ON gt.template_id = t.id
+               WHERE gt.id = ?""",
+            (assignment_id,),
+        ).fetchone()
+    return _row_to_group_template(row) if row else None
+
+
 def get_group_templates(conn: Connection, group_id: int) -> list[GroupTemplate]:
     """Get all template assignments for a group.
 
@@ -1457,6 +1618,11 @@ def add_group_template(
         """INSERT INTO group_templates (group_id, template_id, sports, leagues)
            VALUES (?, ?, ?, ?)""",
         (group_id, template_id, sports_json, leagues_json),
+    )
+    # Clear legacy template_id so it doesn't conflict with group_templates
+    conn.execute(
+        "UPDATE event_epg_groups SET template_id = NULL WHERE id = ? AND template_id IS NOT NULL",
+        (group_id,),
     )
     conn.commit()
     logger.debug(
@@ -1574,29 +1740,54 @@ def get_template_for_event(
 
     if not templates:
         # Fall back to group's legacy template_id
+        logger.debug(
+            "[GROUP_TEMPLATES] No group_templates for group %d, checking legacy template_id",
+            group_id,
+        )
         row = conn.execute(
             "SELECT template_id FROM event_epg_groups WHERE id = ?",
             (group_id,),
         ).fetchone()
         return row["template_id"] if row else None
 
+    # Log what we're resolving for debugging
+    # Use INFO level for first event of each sport/league combo to aid diagnosis
+    logger.debug(
+        "[GROUP_TEMPLATES] Resolving template for group=%d, sport=%r, league=%r, "
+        "templates=%s",
+        group_id,
+        event_sport,
+        event_league,
+        [(t.template_id, t.sports, t.leagues) for t in templates],
+    )
+
     # 1. Check for league match (most specific)
     for t in templates:
         if t.leagues and event_league in t.leagues:
             logger.debug(
-                "[GROUP_TEMPLATES] Resolved template %d for event (league=%s match)",
+                "[GROUP_TEMPLATES] Resolved template %d for event (league=%r match in %s)",
                 t.template_id,
                 event_league,
+                t.leagues,
             )
             return t.template_id
+        # Log near-miss for case sensitivity issues
+        if t.leagues and event_league and event_league.lower() in [lg.lower() for lg in t.leagues]:
+            logger.warning(
+                "[GROUP_TEMPLATES] Case mismatch! Event league %r almost matches %s "
+                "(case-insensitive match found)",
+                event_league,
+                t.leagues,
+            )
 
     # 2. Check for sport match
     for t in templates:
         if t.sports and event_sport in t.sports:
             logger.debug(
-                "[GROUP_TEMPLATES] Resolved template %d for event (sport=%s match)",
+                "[GROUP_TEMPLATES] Resolved template %d for event (sport=%r match in %s)",
                 t.template_id,
                 event_sport,
+                t.sports,
             )
             return t.template_id
 
@@ -1610,6 +1801,13 @@ def get_template_for_event(
             return t.template_id
 
     # No match found - fall back to group's legacy template_id
+    logger.debug(
+        "[GROUP_TEMPLATES] No match found for sport=%r, league=%r in %d templates, "
+        "checking legacy template_id",
+        event_sport,
+        event_league,
+        len(templates),
+    )
     row = conn.execute(
         "SELECT template_id FROM event_epg_groups WHERE id = ?",
         (group_id,),

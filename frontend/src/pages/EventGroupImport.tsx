@@ -17,11 +17,15 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { Loader2, Tv, Eye, Plus, AlertCircle, Info, Check } from "lucide-react"
+import { Loader2, Tv, Eye, Plus, AlertCircle, Info, Check, Layers } from "lucide-react"
 import { LeaguePicker } from "@/components/LeaguePicker"
 import { ChannelProfileSelector } from "@/components/ChannelProfileSelector"
 import { StreamProfileSelector } from "@/components/StreamProfileSelector"
 import { StreamTimezoneSelector } from "@/components/StreamTimezoneSelector"
+import {
+  TemplateAssignmentModal,
+  type LocalTemplateAssignment,
+} from "@/components/TemplateAssignmentModal"
 
 // Types
 interface M3UAccount {
@@ -94,8 +98,7 @@ async function fetchEnabledGroups(): Promise<EnabledGroup[]> {
 }
 
 async function fetchTemplates(): Promise<Template[]> {
-  const response = await api.get<{ templates: Template[] }>("/templates")
-  return response.templates
+  return api.get("/templates")
 }
 
 async function fetchChannelGroups(): Promise<ChannelGroup[]> {
@@ -118,7 +121,7 @@ export function EventGroupImport() {
   const [bulkLeagues, setBulkLeagues] = useState<Set<string>>(new Set())
   const [bulkTemplateId, setBulkTemplateId] = useState<number | null>(null)
   const [bulkChannelGroupId, setBulkChannelGroupId] = useState<number | null>(null)
-  const [bulkChannelGroupMode, setBulkChannelGroupMode] = useState<'static' | 'sport' | 'league'>('static')
+  const [bulkChannelGroupMode, setBulkChannelGroupMode] = useState<string>('static')
   const [bulkChannelProfileIds, setBulkChannelProfileIds] = useState<(number | string)[]>([])
   const [bulkStreamProfileId, setBulkStreamProfileId] = useState<number | null>(null)
   const [bulkStreamTimezone, setBulkStreamTimezone] = useState<string | null>(null)
@@ -126,6 +129,9 @@ export function EventGroupImport() {
   const [bulkOverlapHandling, setBulkOverlapHandling] = useState<string>("add_stream")
   const [bulkEnabled, setBulkEnabled] = useState(true)
   const [bulkImporting, setBulkImporting] = useState(false)
+  // Template assignment state for multi-league groups
+  const [bulkTemplateAssignments, setBulkTemplateAssignments] = useState<LocalTemplateAssignment[]>([])
+  const [showTemplateModal, setShowTemplateModal] = useState(false)
 
   // Queries
   const accountsQuery = useQuery({
@@ -272,7 +278,15 @@ export function EventGroupImport() {
         settings: {
           group_mode: bulkMode,
           leagues: Array.from(bulkLeagues),
-          template_id: bulkTemplateId,
+          // Use template_assignments if configured, otherwise use legacy template_id
+          template_id: bulkTemplateAssignments.length > 0 ? null : bulkTemplateId,
+          template_assignments: bulkTemplateAssignments.length > 0
+            ? bulkTemplateAssignments.map((a) => ({
+                template_id: a.template_id,
+                sports: a.sports,
+                leagues: a.leagues,
+              }))
+            : null,
           channel_group_id: bulkChannelGroupMode === 'static' ? bulkChannelGroupId : null,
           channel_group_mode: bulkChannelGroupMode,
           channel_profile_ids: bulkChannelProfileIds.length > 0 ? bulkChannelProfileIds : null,
@@ -308,6 +322,7 @@ export function EventGroupImport() {
     setBulkMode("single")
     setBulkLeagues(new Set())
     setBulkTemplateId(null)
+    setBulkTemplateAssignments([])
     setBulkChannelGroupId(null)
     setBulkChannelGroupMode('static')
     setBulkChannelProfileIds([])
@@ -694,7 +709,7 @@ export function EventGroupImport() {
                 onSelectionChange={(leagues) => setBulkLeagues(new Set(leagues))}
                 singleSelect={bulkMode === "single"}
                 maxHeight="max-h-48"
-                maxBadges={5}
+                maxBadges={10}
               />
             </div>
 
@@ -704,15 +719,40 @@ export function EventGroupImport() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">Template</Label>
-                  <Select
-                    value={bulkTemplateId?.toString() || ""}
-                    onChange={(e) => setBulkTemplateId(e.target.value ? parseInt(e.target.value) : null)}
-                  >
-                    <option value="">None</option>
-                    {eventTemplates.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </Select>
+                  {bulkMode === "multi" ? (
+                    <div className="space-y-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-start"
+                        onClick={() => setShowTemplateModal(true)}
+                      >
+                        <Layers className="h-4 w-4 mr-2" />
+                        Manage Templates...
+                        {bulkTemplateAssignments.length > 0 && (
+                          <Badge variant="secondary" className="ml-auto">
+                            {bulkTemplateAssignments.length}
+                          </Badge>
+                        )}
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        {bulkTemplateAssignments.length > 0
+                          ? `${bulkTemplateAssignments.length} template assignment(s)`
+                          : "Assign templates per sport/league"}
+                      </p>
+                    </div>
+                  ) : (
+                    <Select
+                      value={bulkTemplateId?.toString() || ""}
+                      onChange={(e) => setBulkTemplateId(e.target.value ? parseInt(e.target.value) : null)}
+                    >
+                      <option value="">None</option>
+                      {eventTemplates.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </Select>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">Channel Group</Label>
@@ -744,40 +784,74 @@ export function EventGroupImport() {
                     </div>
 
                     {/* Dynamic group options */}
-                    <div className="border-t pt-2 mt-2">
-                      <div className="text-xs font-medium text-muted-foreground mb-1">Dynamic Groups</div>
-                      <label className="flex items-center gap-2 cursor-pointer py-1">
-                        <input
-                          type="radio"
-                          name="bulk_channel_group_mode"
-                          checked={bulkChannelGroupMode === "sport"}
-                          onChange={() => {
-                            setBulkChannelGroupMode("sport")
-                            setBulkChannelGroupId(null)
-                          }}
-                          className="accent-primary"
-                        />
-                        <div>
-                          <code className="text-xs font-medium bg-muted px-1 rounded">{"{sport}"}</code>
-                          <span className="text-xs text-muted-foreground ml-1">by sport name</span>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer py-1">
-                        <input
-                          type="radio"
-                          name="bulk_channel_group_mode"
-                          checked={bulkChannelGroupMode === "league"}
-                          onChange={() => {
-                            setBulkChannelGroupMode("league")
-                            setBulkChannelGroupId(null)
-                          }}
-                          className="accent-primary"
-                        />
-                        <div>
-                          <code className="text-xs font-medium bg-muted px-1 rounded">{"{league}"}</code>
-                          <span className="text-xs text-muted-foreground ml-1">by league name</span>
-                        </div>
-                      </label>
+                    <div className="border rounded-md bg-muted/30">
+                      <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Dynamic Groups
+                      </div>
+                      <div className="divide-y">
+                        <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
+                          <input
+                            type="radio"
+                            name="bulk_channel_group_mode"
+                            checked={bulkChannelGroupMode === "{sport}"}
+                            onChange={() => {
+                              setBulkChannelGroupMode("{sport}")
+                              setBulkChannelGroupId(null)
+                            }}
+                            className="accent-primary"
+                          />
+                          <div className="flex-1">
+                            <code className="text-sm font-medium bg-muted px-1 rounded">{"{sport}"}</code>
+                            <p className="text-xs text-muted-foreground mt-0.5">Assign channels to a group by sport name (e.g., Basketball). Group created if it doesn't exist.</p>
+                          </div>
+                        </label>
+                        <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
+                          <input
+                            type="radio"
+                            name="bulk_channel_group_mode"
+                            checked={bulkChannelGroupMode === "{league}"}
+                            onChange={() => {
+                              setBulkChannelGroupMode("{league}")
+                              setBulkChannelGroupId(null)
+                            }}
+                            className="accent-primary"
+                          />
+                          <div className="flex-1">
+                            <code className="text-sm font-medium bg-muted px-1 rounded">{"{league}"}</code>
+                            <p className="text-xs text-muted-foreground mt-0.5">Assign channels to a group by league name (e.g., NBA, NFL). Group created if it doesn't exist.</p>
+                          </div>
+                        </label>
+                        <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
+                          <input
+                            type="radio"
+                            name="bulk_channel_group_mode"
+                            value="custom"
+                            checked={bulkChannelGroupMode !== "static" && bulkChannelGroupMode !== "{sport}" && bulkChannelGroupMode !== "{league}"}
+                            onChange={() => {
+                              setBulkChannelGroupMode("{sport} | {league}")
+                              setBulkChannelGroupId(null)
+                            }}
+                            className="accent-primary"
+                          />
+                          <div className="flex-1">
+                            <span className="text-sm font-medium">Custom</span>
+                            <p className="text-xs text-muted-foreground mt-0.5">Define a custom pattern with variables.</p>
+                          </div>
+                        </label>
+                        {bulkChannelGroupMode !== "static" && bulkChannelGroupMode !== "{sport}" && bulkChannelGroupMode !== "{league}" && (
+                          <div className="p-3 space-y-2">
+                            <Input
+                              value={bulkChannelGroupMode}
+                              onChange={(e) => setBulkChannelGroupMode(e.target.value)}
+                              placeholder="Sports | {sport} | {league}"
+                              className="font-mono text-sm"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Available: <code className="bg-muted px-1 rounded">{"{sport}"}</code>, <code className="bg-muted px-1 rounded">{"{league}"}</code>
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -880,6 +954,18 @@ export function EventGroupImport() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Template Assignment Modal (for multi-league groups) */}
+      {showTemplateModal && (
+        <TemplateAssignmentModal
+          open={showTemplateModal}
+          onOpenChange={setShowTemplateModal}
+          groupName="Bulk Import"
+          groupLeagues={Array.from(bulkLeagues)}
+          localAssignments={bulkTemplateAssignments}
+          onLocalChange={setBulkTemplateAssignments}
+        />
+      )}
     </div>
   )
 }

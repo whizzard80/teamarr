@@ -16,6 +16,7 @@ from .channel_numbering import router as channel_numbering_router
 from .dispatcharr import router as dispatcharr_router
 from .display import router as display_router
 from .epg import router as epg_router
+from .gold_zone import router as gold_zone_router
 from .lifecycle import router as lifecycle_router
 from .models import (
     AllSettingsModel,
@@ -24,6 +25,7 @@ from .models import (
     DisplaySettingsModel,
     DurationSettingsModel,
     EPGSettingsModel,
+    GoldZoneSettingsModel,
     LifecycleSettingsModel,
     ReconciliationSettingsModel,
     SchedulerSettingsModel,
@@ -51,6 +53,7 @@ router.include_router(team_filter_router)
 router.include_router(channel_numbering_router)
 router.include_router(stream_ordering_router)
 router.include_router(update_check_router)
+router.include_router(gold_zone_router)
 
 
 # =============================================================================
@@ -152,6 +155,10 @@ def get_settings():
             dev_branch=settings.update_check.dev_branch,
             auto_detect_branch=settings.update_check.auto_detect_branch,
         ),
+        gold_zone=GoldZoneSettingsModel(
+            enabled=settings.gold_zone.enabled,
+            channel_number=settings.gold_zone.channel_number,
+        ),
         epg_generation_counter=settings.epg_generation_counter,
         schema_version=settings.schema_version,
         # UI timezone info (read-only)
@@ -177,4 +184,5 @@ __all__ = [
     "StreamOrderingSettingsModel",
     "TeamFilterSettingsModel",
     "UpdateCheckSettingsModel",
+    "GoldZoneSettingsModel",
 ]

@@ -372,6 +372,247 @@ def _row_to_run(row: dict) -> ProcessingRun:
 # =============================================================================
 
 
+def get_dashboard_stats(conn: Connection) -> dict:
+    """Get aggregated dashboard stats for UI quadrants.
+
+    Returns stats organized for the Dashboard's 4 quadrants:
+    - Teams: total, active, assigned, leagues breakdown
+    - Event Groups: total, streams, match rates, leagues (from latest run)
+    - EPG: channels, events, filler by type (from latest run)
+    - Channels: active, logos, groups, deleted
+    """
+    # Teams stats
+    teams_row = conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active,
+            SUM(CASE WHEN template_id IS NOT NULL THEN 1 ELSE 0 END) as assigned
+        FROM teams
+    """).fetchone()
+
+    # Teams by league
+    team_leagues = [
+        {"league": r["league"], "logo_url": None, "count": r["count"]}
+        for r in conn.execute("""
+            SELECT primary_league as league, COUNT(*) as count
+            FROM teams
+            GROUP BY primary_league
+            ORDER BY count DESC
+        """).fetchall()
+    ]
+
+    # Event groups configuration
+    groups = conn.execute("""
+        SELECT id, name, leagues, total_stream_count
+        FROM event_epg_groups
+        WHERE enabled = 1
+    """).fetchall()
+
+    # Build group name lookup and collect configured leagues
+    group_name_lookup = {}
+    event_leagues_set: set[str] = set()
+    total_streams = 0
+
+    for g in groups:
+        group_name_lookup[g["id"]] = g["name"]
+        leagues = json.loads(g["leagues"]) if g["leagues"] else []
+        event_leagues_set.update(leagues)
+        total_streams += g["total_stream_count"] or 0
+
+    event_leagues = [
+        {"league": league, "logo_url": None, "count": 1} for league in sorted(event_leagues_set)
+    ]
+
+    # Get actual match stats from latest completed full_epg run
+    latest_run = conn.execute("""
+        SELECT id, streams_matched, streams_unmatched, streams_fetched, streams_cached,
+               programmes_total, programmes_events, programmes_pregame,
+               programmes_postgame, programmes_idle, channels_active,
+               extra_metrics
+        FROM processing_runs
+        WHERE status = 'completed' AND run_type = 'full_epg'
+        ORDER BY id DESC
+        LIMIT 1
+    """).fetchone()
+
+    # Initialize match stats from latest run
+    matched_streams = 0
+    unmatched_streams = 0
+    group_breakdown = []
+
+    if latest_run:
+        matched_streams = latest_run["streams_matched"] or 0
+        unmatched_streams = latest_run["streams_unmatched"] or 0
+
+        matched_by_group = conn.execute(
+            """
+            SELECT group_id, COUNT(*) as matched
+            FROM epg_matched_streams
+            WHERE run_id = ?
+            GROUP BY group_id
+        """,
+            (latest_run["id"],),
+        ).fetchall()
+
+        failed_by_group = conn.execute(
+            """
+            SELECT group_id, COUNT(*) as failed
+            FROM epg_failed_matches
+            WHERE run_id = ?
+            GROUP BY group_id
+        """,
+            (latest_run["id"],),
+        ).fetchall()
+
+        failed_lookup = {r["group_id"]: r["failed"] for r in failed_by_group}
+
+        for r in matched_by_group:
+            gid = r["group_id"]
+            matched = r["matched"]
+            failed = failed_lookup.get(gid, 0)
+            group_breakdown.append(
+                {
+                    "name": group_name_lookup.get(gid, f"Group {gid}"),
+                    "matched": matched,
+                    "total": matched + failed,
+                }
+            )
+
+        matched_gids = {r["group_id"] for r in matched_by_group}
+        for gid, failed in failed_lookup.items():
+            if gid not in matched_gids:
+                group_breakdown.append(
+                    {
+                        "name": group_name_lookup.get(gid, f"Group {gid}"),
+                        "matched": 0,
+                        "total": failed,
+                    }
+                )
+    else:
+        for g in groups:
+            stream_count = g["total_stream_count"] or 0
+            group_breakdown.append(
+                {
+                    "name": g["name"],
+                    "matched": 0,
+                    "total": stream_count,
+                }
+            )
+
+    total_eligible = matched_streams + unmatched_streams
+    match_percent = round(matched_streams / total_eligible * 100) if total_eligible > 0 else 0
+
+    # EPG stats from latest run
+    epg_stats = {
+        "channels_total": 0,
+        "channels_team": 0,
+        "channels_event": 0,
+        "events_total": 0,
+        "events_team": 0,
+        "events_event": 0,
+        "filler_total": 0,
+        "filler_pregame": 0,
+        "filler_postgame": 0,
+        "filler_idle": 0,
+        "programmes_total": 0,
+    }
+
+    if latest_run:
+        extra = json.loads(latest_run["extra_metrics"]) if latest_run["extra_metrics"] else {}
+        teams_processed = extra.get("teams_processed", 0)
+
+        programmes_total = latest_run["programmes_total"] or 0
+        events_total = latest_run["programmes_events"] or 0
+        channels_active = latest_run["channels_active"] or 0
+
+        if teams_processed > 0 and channels_active == 0:
+            events_team = events_total
+            events_event = 0
+        elif channels_active > 0 and teams_processed == 0:
+            events_team = 0
+            events_event = events_total
+        elif teams_processed > 0 and channels_active > 0:
+            total_channels = teams_processed + channels_active
+            events_team = int(events_total * teams_processed / total_channels)
+            events_event = events_total - events_team
+        else:
+            events_team = 0
+            events_event = 0
+
+        epg_stats["programmes_total"] = programmes_total
+        epg_stats["events_total"] = events_total
+        epg_stats["events_team"] = events_team
+        epg_stats["events_event"] = events_event
+        epg_stats["filler_pregame"] = latest_run["programmes_pregame"] or 0
+        epg_stats["filler_postgame"] = latest_run["programmes_postgame"] or 0
+        epg_stats["filler_idle"] = latest_run["programmes_idle"] or 0
+        epg_stats["filler_total"] = (
+            epg_stats["filler_pregame"]
+            + epg_stats["filler_postgame"]
+            + epg_stats["filler_idle"]
+        )
+        epg_stats["channels_team"] = teams_processed
+        epg_stats["channels_event"] = channels_active
+        epg_stats["channels_total"] = teams_processed + channels_active
+
+    # Managed channels stats
+    channels_row = conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END) as active,
+            SUM(CASE WHEN logo_url IS NOT NULL AND logo_url != ''
+                THEN 1 ELSE 0 END) as with_logos,
+            SUM(CASE WHEN deleted_at IS NOT NULL
+                AND deleted_at > datetime('now', '-1 day')
+                THEN 1 ELSE 0 END) as deleted_24h
+        FROM managed_channels
+    """).fetchone()
+
+    # Channel groups breakdown
+    channel_group_rows = conn.execute("""
+        SELECT mc.event_epg_group_id, eg.name as group_name, COUNT(*) as count
+        FROM managed_channels mc
+        LEFT JOIN event_epg_groups eg ON mc.event_epg_group_id = eg.id
+        WHERE mc.deleted_at IS NULL AND mc.event_epg_group_id IS NOT NULL
+        GROUP BY mc.event_epg_group_id
+        ORDER BY count DESC
+    """).fetchall()
+    channel_group_breakdown = [
+        {
+            "id": r["event_epg_group_id"],
+            "name": r["group_name"] or f"Group {r['event_epg_group_id']}",
+            "count": r["count"],
+        }
+        for r in channel_group_rows
+    ]
+    channel_groups = len(channel_group_breakdown)
+
+    return {
+        "teams": {
+            "total": teams_row["total"] or 0,
+            "active": teams_row["active"] or 0,
+            "assigned": teams_row["assigned"] or 0,
+            "leagues": team_leagues,
+        },
+        "event_groups": {
+            "total": len(groups),
+            "streams_total": total_streams,
+            "streams_matched": matched_streams,
+            "match_percent": match_percent,
+            "leagues": event_leagues,
+            "groups": group_breakdown,
+        },
+        "epg": epg_stats,
+        "channels": {
+            "active": channels_row["active"] or 0,
+            "with_logos": channels_row["with_logos"] or 0,
+            "groups": channel_groups,
+            "deleted_24h": channels_row["deleted_24h"] or 0,
+            "group_breakdown": channel_group_breakdown,
+        },
+    }
+
+
 def get_current_stats(conn: Connection) -> dict:
     """Get current aggregate stats (live, not from snapshot).
 
@@ -512,6 +753,13 @@ def cleanup_old_runs(conn: Connection, days: int = 30) -> int:
     """Delete processing runs older than specified days."""
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     cursor = conn.execute("DELETE FROM processing_runs WHERE created_at < ?", (cutoff,))
+    conn.commit()
+    return cursor.rowcount
+
+
+def clear_all_runs(conn: Connection) -> int:
+    """Delete all processing runs."""
+    cursor = conn.execute("DELETE FROM processing_runs")
     conn.commit()
     return cursor.rowcount
 
@@ -908,6 +1156,77 @@ def clear_run_details(conn: Connection, run_id: int) -> None:
     conn.execute("DELETE FROM epg_matched_streams WHERE run_id = ?", (run_id,))
     conn.execute("DELETE FROM epg_failed_matches WHERE run_id = ?", (run_id,))
     conn.commit()
+
+
+def get_live_xmltv_content(conn: Connection) -> dict[str, list[str]]:
+    """Get XMLTV content for live stats calculation.
+
+    Returns team and event XMLTV content separately for the live stats
+    endpoint to parse.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        Dict with 'team' and 'event' keys, each containing list of XMLTV content strings
+    """
+    team_content = []
+    cursor = conn.execute("""
+        SELECT x.xmltv_content
+        FROM team_epg_xmltv x
+        JOIN teams t ON x.team_id = t.id
+        WHERE t.active = 1
+        AND x.xmltv_content IS NOT NULL AND x.xmltv_content != ''
+    """)
+    for row in cursor.fetchall():
+        if row["xmltv_content"]:
+            team_content.append(row["xmltv_content"])
+
+    event_content = []
+    cursor = conn.execute("""
+        SELECT x.xmltv_content FROM event_epg_xmltv x
+        JOIN event_epg_groups g ON x.group_id = g.id
+        WHERE g.enabled = 1
+        AND x.xmltv_content IS NOT NULL AND x.xmltv_content != ''
+    """)
+    for row in cursor.fetchall():
+        if row["xmltv_content"]:
+            event_content.append(row["xmltv_content"])
+
+    return {"team": team_content, "event": event_content}
+
+
+def get_epg_analysis_stats(conn: Connection) -> dict | None:
+    """Get programme counts from the latest full_epg run.
+
+    Used by the EPG analysis endpoint to override XML-parsed counts
+    with more accurate DB stats.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        Dict with programme counts or None if no completed run
+    """
+    row = conn.execute(
+        """
+        SELECT programmes_total, programmes_events, programmes_pregame,
+               programmes_postgame, programmes_idle
+        FROM processing_runs
+        WHERE status = 'completed' AND run_type = 'full_epg'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "programmes_total": row["programmes_total"],
+        "programmes_events": row["programmes_events"],
+        "programmes_pregame": row["programmes_pregame"],
+        "programmes_postgame": row["programmes_postgame"],
+        "programmes_idle": row["programmes_idle"],
+    }
 
 
 def cleanup_stuck_runs(conn: Connection) -> int:

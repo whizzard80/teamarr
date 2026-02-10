@@ -10,7 +10,6 @@ import {
   getGroup,
   listGroups,
   previewGroup,
-  processGroup,
   promoteGroup,
   reorderGroups,
   updateGroup,
@@ -73,17 +72,6 @@ export function useToggleGroup() {
   return useMutation({
     mutationFn: ({ groupId, enabled }: { groupId: number; enabled: boolean }) =>
       enabled ? enableGroup(groupId) : disableGroup(groupId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["groups"] })
-    },
-  })
-}
-
-export function useProcessGroup() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: (groupId: number) => processGroup(groupId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["groups"] })
     },

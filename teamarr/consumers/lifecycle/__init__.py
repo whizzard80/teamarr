@@ -26,6 +26,7 @@ from .types import (
     LifecycleDecision,
     StreamProcessResult,
     generate_event_tvg_id,
+    slugify_keyword,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ __all__ = [
     "ChannelLifecycleService",
     # Functions
     "generate_event_tvg_id",
+    "slugify_keyword",
     "get_lifecycle_settings",
     "create_lifecycle_service",
 ]

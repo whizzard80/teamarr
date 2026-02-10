@@ -8,14 +8,24 @@ export interface TeamFilterEntry {
   name?: string | null  // For display only, not used in matching
 }
 
+// Soccer team to follow (for teams mode)
+export interface SoccerFollowedTeam {
+  provider: string      // e.g., "espn"
+  team_id: string       // provider_team_id from team_cache
+  name?: string | null  // For display only
+}
+
 export interface EventGroup {
   id: number
   name: string
   display_name: string | null  // Optional display name override for UI
   leagues: string[]
+  soccer_mode: 'all' | 'teams' | 'manual' | null  // Soccer selection mode (null for non-soccer)
+  soccer_followed_teams: SoccerFollowedTeam[] | null  // Teams to follow (for teams mode)
   group_mode: string  // "single" or "multi" - persisted to preserve user intent
   parent_group_id: number | null
   template_id: number | null
+  group_template_count: number  // Count of templates via Manage Templates
   channel_start_number: number | null
   channel_group_id: number | null
   channel_group_mode: string  // Dynamic channel group assignment mode
@@ -53,6 +63,7 @@ export interface EventGroup {
   include_teams: TeamFilterEntry[] | null
   exclude_teams: TeamFilterEntry[] | null
   team_filter_mode: 'include' | 'exclude'
+  bypass_filter_for_playoffs: boolean | null  // null = use default
   // Processing stats
   last_refresh: string | null
   stream_count: number
@@ -83,6 +94,8 @@ export interface EventGroupCreate {
   name: string
   display_name?: string | null  // Optional display name override
   leagues: string[]
+  soccer_mode?: 'all' | 'teams' | 'manual' | null  // Soccer selection mode (null for non-soccer)
+  soccer_followed_teams?: SoccerFollowedTeam[] | null  // Teams to follow (for teams mode)
   group_mode?: string  // "single" or "multi" - persisted to preserve user intent
   parent_group_id?: number | null
   template_id?: number | null
@@ -123,6 +136,7 @@ export interface EventGroupCreate {
   include_teams?: TeamFilterEntry[] | null
   exclude_teams?: TeamFilterEntry[] | null
   team_filter_mode?: 'include' | 'exclude'
+  bypass_filter_for_playoffs?: boolean | null  // null = use default
   // Multi-sport enhancements (Phase 3)
   channel_sort_order?: string
   overlap_handling?: string
@@ -156,6 +170,8 @@ export interface EventGroupUpdate extends Partial<EventGroupCreate> {
   clear_custom_regex_league?: boolean
   clear_include_teams?: boolean
   clear_exclude_teams?: boolean
+  clear_soccer_mode?: boolean
+  clear_soccer_followed_teams?: boolean
 }
 
 export interface EventGroupListResponse {
@@ -277,20 +293,6 @@ export interface CacheStatus {
 export interface HealthResponse {
   status: string
   version?: string
-}
-
-export interface ProcessGroupResponse {
-  group_id: number
-  group_name: string
-  streams_fetched: number
-  streams_matched: number
-  streams_unmatched: number
-  channels_created: number
-  channels_existing: number
-  channels_skipped: number
-  channel_errors: number
-  errors: string[]
-  duration_seconds: number
 }
 
 // Preview (stream matching without channel creation)

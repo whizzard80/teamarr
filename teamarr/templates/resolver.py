@@ -125,6 +125,11 @@ class TemplateResolver:
                     value = var_def.extractor(ctx, ctx.last_game)
                     variables[f"{var_def.name}.last"] = value
 
+        # Merge extra_vars (override extractor values for injected variables)
+        if ctx.extra_vars:
+            for key, val in ctx.extra_vars.items():
+                variables[key.lower()] = val
+
         return variables
 
     def resolve_conditional(

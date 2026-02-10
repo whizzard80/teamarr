@@ -54,7 +54,7 @@ class LogoManager:
         """Ensure cache is populated."""
         if not self._cache:
             logos = self._client.paginated_get(
-                "/api/channels/logos/?page_size=500",
+                "/api/channels/logos/?page=1&page_size=500",
                 error_context="logos",
             )
             for logo_data in logos:
@@ -70,7 +70,7 @@ class LogoManager:
             List of DispatcharrLogo objects
         """
         logos = self._client.paginated_get(
-            "/api/channels/logos/?page_size=500",
+            "/api/channels/logos/?page=1&page_size=500",
             error_context="logos",
         )
         return [DispatcharrLogo.from_api(logo) for logo in logos]

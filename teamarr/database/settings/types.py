@@ -112,8 +112,8 @@ class DisplaySettings:
 class APISettings:
     """API behavior settings."""
 
-    timeout: int = 10
-    retry_count: int = 3
+    timeout: int = 30
+    retry_count: int = 5
     soccer_cache_refresh_frequency: str = "weekly"
     team_cache_refresh_frequency: str = "weekly"
 
@@ -142,6 +142,7 @@ class TeamFilterSettings:
     include_teams: list[dict] | None = None
     exclude_teams: list[dict] | None = None
     mode: str = "include"  # 'include' or 'exclude'
+    bypass_filter_for_playoffs: bool = False  # Include all playoff games regardless of filter
 
 
 @dataclass
@@ -188,6 +189,21 @@ class UpdateCheckSettings:
 
 
 @dataclass
+class BackupSettings:
+    """Scheduled backup settings.
+
+    Controls automatic database backups with rotation and protection.
+    Backups are stored as SQLite database copies with optional protection
+    to prevent automatic rotation deletion.
+    """
+
+    enabled: bool = False  # Master toggle for scheduled backups
+    cron: str = "0 3 * * *"  # Cron expression (default: 3 AM daily)
+    max_count: int = 7  # Maximum backups to keep (rotation)
+    path: str = "./data/backups"  # Directory for backup files
+
+
+@dataclass
 class ChannelNumberingSettings:
     """Channel numbering and sorting settings for AUTO groups.
 
@@ -214,6 +230,21 @@ class ChannelNumberingSettings:
 
 
 @dataclass
+class GoldZoneSettings:
+    """Gold Zone (Olympics Special Feature).
+
+    Consolidates all "Gold Zone" streams into a single unified channel
+    with external EPG from jesmann.com.
+    """
+
+    enabled: bool = False
+    channel_number: int | None = None
+    channel_group_id: int | None = None
+    channel_profile_ids: list[int | str] | None = None  # null = all profiles
+    stream_profile_id: int | None = None
+
+
+@dataclass
 class AllSettings:
     """Complete application settings."""
 
@@ -230,5 +261,7 @@ class AllSettings:
     channel_numbering: ChannelNumberingSettings = field(default_factory=ChannelNumberingSettings)
     stream_ordering: StreamOrderingSettings = field(default_factory=StreamOrderingSettings)
     update_check: UpdateCheckSettings = field(default_factory=UpdateCheckSettings)
+    backup: BackupSettings = field(default_factory=BackupSettings)
+    gold_zone: GoldZoneSettings = field(default_factory=GoldZoneSettings)
     epg_generation_counter: int = 0
-    schema_version: int = 48
+    schema_version: int = 52

@@ -24,6 +24,7 @@ from teamarr.consumers.channel_lifecycle import (
     create_lifecycle_service,
     generate_event_tvg_id,
     get_lifecycle_settings,
+    slugify_keyword,
 )
 from teamarr.consumers.event_epg import (
     EventChannelInfo,
@@ -108,6 +109,7 @@ __all__ = [
     "StreamProcessResult",
     "create_lifecycle_service",
     "generate_event_tvg_id",
+    "slugify_keyword",
     "get_lifecycle_settings",
     # Stream matching
     "StreamMatcher",
