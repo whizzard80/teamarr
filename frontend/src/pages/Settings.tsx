@@ -24,13 +24,10 @@ import {
   ShieldOff,
   HardDrive,
 } from "lucide-react"
-import {
-  ChannelProfileSelector,
-  profileIdsToApi,
-  apiToProfileIds,
-} from "@/components/ChannelProfileSelector"
+import { ChannelProfileSelector } from "@/components/ChannelProfileSelector"
+import { profileIdsToApi, apiToProfileIds } from "@/lib/channel-profiles"
 import { StreamProfileSelector } from "@/components/StreamProfileSelector"
-import { useGenerationProgress } from "@/contexts/GenerationContext"
+import { useGenerationProgress } from "@/contexts/generation-context"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"

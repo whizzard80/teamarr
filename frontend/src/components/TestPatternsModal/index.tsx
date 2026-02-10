@@ -26,6 +26,7 @@ import { PatternPanel } from "./PatternPanel"
 import { InteractiveSelector } from "./InteractiveSelector"
 import { FlaskConical, Loader2 } from "lucide-react"
 import { EMPTY_PATTERNS, type PatternState } from "./patterns"
+export type { PatternState } from "./patterns"
 
 // ---------------------------------------------------------------------------
 // Props
