@@ -55,6 +55,9 @@ class MatchContext:
     # From classifier
     classified: ClassifiedStream
 
+    # Optional: TZ for interpreting stream dates (from stream or group)
+    stream_tz: ZoneInfo | None = None
+
     # Extracted team names (from classifier)
     team1: str | None = None
     team2: str | None = None
@@ -142,6 +145,7 @@ class TeamMatcher:
         generation: int,
         user_tz: ZoneInfo,
         sport_durations: dict[str, float] | None = None,
+        stream_tz: ZoneInfo | None = None,
     ) -> MatchOutcome:
         """Single-league matching - search only the specified league.
 
@@ -156,6 +160,7 @@ class TeamMatcher:
             generation: Cache generation counter
             user_tz: User timezone for date validation
             sport_durations: Sport duration settings for ongoing event detection
+            stream_tz: Timezone for interpreting stream dates (from stream or group)
 
         Returns:
             MatchOutcome with result
@@ -175,6 +180,7 @@ class TeamMatcher:
             generation=generation,
             user_tz=user_tz,
             classified=classified,
+            stream_tz=stream_tz,
             team1=classified.team1,
             team2=classified.team2,
             sport_durations=sport_durations or {},
@@ -227,6 +233,7 @@ class TeamMatcher:
         user_tz: ZoneInfo,
         sport_durations: dict[str, float] | None = None,
         prefetched_events: dict[str, list["Event"]] | None = None,
+        stream_tz: ZoneInfo | None = None,
     ) -> MatchOutcome:
         """Multi-league matching with league hint detection.
 
@@ -269,6 +276,7 @@ class TeamMatcher:
             generation=generation,
             user_tz=user_tz,
             classified=classified,
+            stream_tz=stream_tz,
             team1=classified.team1,
             team2=classified.team2,
             sport_durations=sport_durations or {},
@@ -473,9 +481,13 @@ class TeamMatcher:
 
             event_date = event.start_time.astimezone(ctx.user_tz).date()
 
+            # Check for date mismatch from stream (if extracted)
+            # Use stream_tz if available - the date in the stream name is in the provider's timezone
             date_penalty = 0.0
             if ctx.classified.normalized.extracted_date:
-                if ctx.classified.normalized.extracted_date != event_date:
+                compare_tz = ctx.stream_tz or ctx.user_tz
+                event_date_in_stream_tz = event.start_time.astimezone(compare_tz).date()
+                if ctx.classified.normalized.extracted_date != event_date_in_stream_tz:
                     date_penalty = DATE_MISMATCH_PENALTY
 
             # Check for sport mismatch from stream (if detected)
@@ -501,14 +513,16 @@ class TeamMatcher:
                 abs_distance = abs(days_from_target)
 
                 # Calculate time proximity for doubleheader disambiguation
+                # Use stream_tz if available - the time in stream name is in provider's timezone
                 time_distance = 999999
                 if ctx.classified.normalized.extracted_time:
-                    ref_date = event.start_time.astimezone(ctx.user_tz).date()
+                    time_tz = ctx.stream_tz or ctx.user_tz
+                    ref_date = event.start_time.astimezone(time_tz).date()
                     stream_dt = datetime.combine(
-                        ref_date, ctx.classified.normalized.extracted_time, tzinfo=ctx.user_tz
+                        ref_date, ctx.classified.normalized.extracted_time, tzinfo=time_tz
                     )
                     time_distance = abs(
-                        int((event.start_time.astimezone(ctx.user_tz) - stream_dt).total_seconds())
+                        int((event.start_time.astimezone(time_tz) - stream_dt).total_seconds())
                     )
 
                 # Apply penalty for date mismatches (avoid hard exclusion)
@@ -622,9 +636,13 @@ class TeamMatcher:
 
             event_date = event.start_time.astimezone(ctx.user_tz).date()
 
+            # Check for date mismatch from stream (if extracted)
+            # Use stream_tz if available - the date in the stream name is in the provider's timezone
             date_penalty = 0.0
             if ctx.classified.normalized.extracted_date:
-                if ctx.classified.normalized.extracted_date != event_date:
+                compare_tz = ctx.stream_tz or ctx.user_tz
+                event_date_in_stream_tz = event.start_time.astimezone(compare_tz).date()
+                if ctx.classified.normalized.extracted_date != event_date_in_stream_tz:
                     date_penalty = DATE_MISMATCH_PENALTY
 
             # Check for sport mismatch from stream (if detected)
@@ -650,14 +668,16 @@ class TeamMatcher:
                 abs_distance = abs(days_from_target)
 
                 # Calculate time proximity for doubleheader disambiguation
+                # Use stream_tz if available - the time in stream name is in provider's timezone
                 time_distance = 999999
                 if ctx.classified.normalized.extracted_time:
-                    ref_date = event.start_time.astimezone(ctx.user_tz).date()
+                    time_tz = ctx.stream_tz or ctx.user_tz
+                    ref_date = event.start_time.astimezone(time_tz).date()
                     stream_dt = datetime.combine(
-                        ref_date, ctx.classified.normalized.extracted_time, tzinfo=ctx.user_tz
+                        ref_date, ctx.classified.normalized.extracted_time, tzinfo=time_tz
                     )
                     time_distance = abs(
-                        int((event.start_time.astimezone(ctx.user_tz) - stream_dt).total_seconds())
+                        int((event.start_time.astimezone(time_tz) - stream_dt).total_seconds())
                     )
 
                 # Apply penalty for date mismatches (avoid hard exclusion)
@@ -1116,6 +1136,7 @@ class TeamMatcher:
                     generation=ctx.generation,
                     user_tz=ctx.user_tz,
                     classified=ctx.classified,
+                    stream_tz=ctx.stream_tz,
                     team1=canonical1,
                     team2=canonical2,
                     sport_durations=ctx.sport_durations,

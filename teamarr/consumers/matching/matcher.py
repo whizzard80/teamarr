@@ -524,7 +524,7 @@ class StreamMatcher:
         # Determine effective stream timezone for date/time comparison
         # Priority: extracted TZ from stream > group setting > None (use user_tz as fallback)
         stream_tz = self._stream_tz
-        extracted_tz = getattr(classified.normalized, "extracted_tz", None)
+        extracted_tz = classified.normalized.extracted_tz
         if extracted_tz:
             try:
                 stream_tz = ZoneInfo(extracted_tz)
@@ -543,6 +543,7 @@ class StreamMatcher:
                 generation=self._generation,
                 user_tz=self._user_tz,
                 sport_durations=self._sport_durations,
+                stream_tz=stream_tz,
             )
         else:
             return self._team_matcher.match_multi_league(
@@ -555,6 +556,7 @@ class StreamMatcher:
                 user_tz=self._user_tz,
                 sport_durations=self._sport_durations,
                 prefetched_events=self._prefetched_events,
+                stream_tz=stream_tz,
             )
 
     def _match_event_card(

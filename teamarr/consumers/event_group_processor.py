@@ -1962,6 +1962,14 @@ class EventGroupProcessor:
         if bypass_playoffs is None:
             bypass_playoffs = settings.bypass_filter_for_playoffs
 
+        # If the global team filter is disabled, skip ALL team filtering
+        # (group-level and global default) unless the group has its own filter
+        if not settings.enabled:
+            # Even when globally disabled, respect group-level overrides
+            if group.include_teams or group.exclude_teams:
+                return group.include_teams, group.exclude_teams, group.team_filter_mode, bypass_playoffs
+            return None, None, "include", bypass_playoffs
+
         # If group has its own filter, use it
         if group.include_teams or group.exclude_teams:
             return group.include_teams, group.exclude_teams, group.team_filter_mode, bypass_playoffs
