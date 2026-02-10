@@ -543,7 +543,6 @@ class StreamMatcher:
                 generation=self._generation,
                 user_tz=self._user_tz,
                 sport_durations=self._sport_durations,
-                stream_tz=stream_tz,
             )
         else:
             return self._team_matcher.match_multi_league(
@@ -556,7 +555,6 @@ class StreamMatcher:
                 user_tz=self._user_tz,
                 sport_durations=self._sport_durations,
                 prefetched_events=self._prefetched_events,
-                stream_tz=stream_tz,
             )
 
     def _match_event_card(
