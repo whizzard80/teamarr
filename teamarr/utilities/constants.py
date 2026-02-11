@@ -95,6 +95,18 @@ TEAM_ALIASES: dict[str, str] = {
     "sevilla fc": "sevilla",
     "real sociedad": "real sociedad",
     "villarreal cf": "villarreal",
+    "girona fc": "girona",
+    "levante ud": "levante",
+    "ud levante": "levante",
+    "rcd espanyol": "espanyol barcelona",
+    "espanyol": "espanyol barcelona",
+    "valencia cf": "valencia",
+    "ca osasuna": "osasuna",
+    "osasuna": "osasuna",
+    # German: 1. FC Köln / Cologne
+    "1. fc koln": "fc cologne",
+    "1. fc cologne": "fc cologne",
+    "fc koln": "fc cologne",
     # Italian Serie A
     "inter": "inter milan",
     "inter milan": "internazionale",
@@ -286,6 +298,7 @@ PLACEHOLDER_PATTERNS: list[str] = [
 GAME_SEPARATORS: list[str] = [
     " vs. ",
     " vs ",
+    " VS ",  # Uppercase (e.g. "Florida VS Houston", "March Madness")
     " v. ",
     " v ",
     " @ ",
@@ -380,6 +393,7 @@ LEAGUE_HINT_PATTERNS: list[tuple[str, str | list[str]]] = [
     (r"\bncaam[:\s-]", "mens-college-basketball"),
     (r"\bncaaw[:\s-]", "womens-college-basketball"),
     (r"\bncaab[:\s-]", "mens-college-basketball"),  # Alternate abbreviation
+    (r"\bmarch\s+madness[:\s-]", "mens-college-basketball"),
     # ==========================================================================
     # Soccer / Football - Multi-league umbrella brands first
     # ==========================================================================
