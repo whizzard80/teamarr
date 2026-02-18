@@ -86,10 +86,10 @@ const DEFAULT_FORM: TemplateCreate = {
   pregame_fallback: DEFAULT_PREGAME,
   postgame_enabled: true,
   postgame_fallback: DEFAULT_POSTGAME,
-  postgame_conditional: { enabled: true, description_final: null, description_not_final: null },
+  postgame_conditional: { enabled: true, title_final: null, title_not_final: null, subtitle_final: null, subtitle_not_final: null, description_final: null, description_not_final: null },
   idle_enabled: true,
   idle_content: DEFAULT_IDLE,
-  idle_conditional: { enabled: true, description_final: null, description_not_final: null },
+  idle_conditional: { enabled: true, title_final: null, title_not_final: null, subtitle_final: null, subtitle_not_final: null, description_final: null, description_not_final: null },
   idle_offseason: { title_enabled: false, title: null, subtitle_enabled: false, subtitle: null, description_enabled: false, description: null },
   conditional_descriptions: [],
   event_channel_name: "{away_team} @ {home_team}",
@@ -197,10 +197,10 @@ export function TemplateForm() {
         pregame_fallback: mergeFillerContent(template.pregame_fallback, DEFAULT_PREGAME),
         postgame_enabled: template.postgame_enabled ?? true,
         postgame_fallback: mergeFillerContent(template.postgame_fallback, DEFAULT_POSTGAME),
-        postgame_conditional: template.postgame_conditional || { enabled: true, description_final: null, description_not_final: null },
+        postgame_conditional: template.postgame_conditional || { enabled: true, title_final: null, title_not_final: null, subtitle_final: null, subtitle_not_final: null, description_final: null, description_not_final: null },
         idle_enabled: template.idle_enabled ?? true,
         idle_content: mergeFillerContent(template.idle_content, DEFAULT_IDLE),
-        idle_conditional: template.idle_conditional || { enabled: true, description_final: null, description_not_final: null },
+        idle_conditional: template.idle_conditional || { enabled: true, title_final: null, title_not_final: null, subtitle_final: null, subtitle_not_final: null, description_final: null, description_not_final: null },
         idle_offseason: template.idle_offseason || { title_enabled: false, title: null, subtitle_enabled: false, subtitle: null, description_enabled: false, description: null },
         conditional_descriptions: template.conditional_descriptions || [],
         event_channel_name: template.event_channel_name,
@@ -1777,8 +1777,8 @@ function FillersTab({ formData, setFormData, isTeamTemplate, fieldRefs, setLastF
   const pregame = formData.pregame_fallback || DEFAULT_PREGAME
   const postgame = formData.postgame_fallback || DEFAULT_POSTGAME
   const idle = formData.idle_content || DEFAULT_IDLE
-  const postgameCond = formData.postgame_conditional || { enabled: false, description_final: null, description_not_final: null }
-  const idleCond = formData.idle_conditional || { enabled: false, description_final: null, description_not_final: null }
+  const postgameCond = formData.postgame_conditional || { enabled: false, title_final: null, title_not_final: null, subtitle_final: null, subtitle_not_final: null, description_final: null, description_not_final: null }
+  const idleCond = formData.idle_conditional || { enabled: false, title_final: null, title_not_final: null, subtitle_final: null, subtitle_not_final: null, description_final: null, description_not_final: null }
   const idleOffseason = formData.idle_offseason || { title_enabled: false, title: null, subtitle_enabled: false, subtitle: null, description_enabled: false, description: null }
 
   const updatePregame = (field: keyof FillerContent, value: string | null) => {
@@ -1939,31 +1939,79 @@ function FillersTab({ formData, setFormData, isTeamTemplate, fieldRefs, setLastF
                   checked={postgameCond.enabled}
                   onCheckedChange={() => updatePostgameCond("enabled", !postgameCond.enabled)}
                 />
-                <span className="text-sm">Use conditional description based on last game status</span>
+                <span className="text-sm">Use conditional content based on last game status</span>
               </label>
               {postgameCond.enabled && (
-                <>
-                  <TemplateField
-                    id="postgame_conditional.description_final"
-                    label="✓ If last game is final:"
-                    value={postgameCond.description_final || ""}
-                    onChange={(v) => updatePostgameCond("description_final", v || null)}
-                    placeholder="The {team_name} {result_text.last} the {opponent.last} {final_score.last}"
-                    fieldRefs={fieldRefs}
-                    setLastFocusedField={setLastFocusedField}
-                    resolveTemplate={resolveTemplate}
-                  />
-                  <TemplateField
-                    id="postgame_conditional.description_not_final"
-                    label="⏳ If last game is NOT final:"
-                    value={postgameCond.description_not_final || ""}
-                    onChange={(v) => updatePostgameCond("description_not_final", v || null)}
-                    placeholder="The game between {team_name} and {opponent.last} has not yet ended."
-                    fieldRefs={fieldRefs}
-                    setLastFocusedField={setLastFocusedField}
-                    resolveTemplate={resolveTemplate}
-                  />
-                </>
+                <div className="space-y-4">
+                  {/* Final game conditionals */}
+                  <div className="space-y-2">
+                    <span className="text-sm font-medium text-muted-foreground">✓ If last game is final:</span>
+                    <TemplateField
+                      id="postgame_conditional.title_final"
+                      label="Title"
+                      value={postgameCond.title_final || ""}
+                      onChange={(v) => updatePostgameCond("title_final", v || null)}
+                      placeholder="Leave empty to use default title"
+                      fieldRefs={fieldRefs}
+                      setLastFocusedField={setLastFocusedField}
+                      resolveTemplate={resolveTemplate}
+                    />
+                    <TemplateField
+                      id="postgame_conditional.subtitle_final"
+                      label="Subtitle"
+                      value={postgameCond.subtitle_final || ""}
+                      onChange={(v) => updatePostgameCond("subtitle_final", v || null)}
+                      placeholder="Leave empty to use default subtitle"
+                      fieldRefs={fieldRefs}
+                      setLastFocusedField={setLastFocusedField}
+                      resolveTemplate={resolveTemplate}
+                    />
+                    <TemplateField
+                      id="postgame_conditional.description_final"
+                      label="Description"
+                      value={postgameCond.description_final || ""}
+                      onChange={(v) => updatePostgameCond("description_final", v || null)}
+                      placeholder="The {team_name} {result_text.last} the {opponent.last} {final_score.last}"
+                      fieldRefs={fieldRefs}
+                      setLastFocusedField={setLastFocusedField}
+                      resolveTemplate={resolveTemplate}
+                    />
+                  </div>
+                  {/* Not final game conditionals */}
+                  <div className="space-y-2">
+                    <span className="text-sm font-medium text-muted-foreground">⏳ If last game is NOT final:</span>
+                    <TemplateField
+                      id="postgame_conditional.title_not_final"
+                      label="Title"
+                      value={postgameCond.title_not_final || ""}
+                      onChange={(v) => updatePostgameCond("title_not_final", v || null)}
+                      placeholder="Leave empty to use default title"
+                      fieldRefs={fieldRefs}
+                      setLastFocusedField={setLastFocusedField}
+                      resolveTemplate={resolveTemplate}
+                    />
+                    <TemplateField
+                      id="postgame_conditional.subtitle_not_final"
+                      label="Subtitle"
+                      value={postgameCond.subtitle_not_final || ""}
+                      onChange={(v) => updatePostgameCond("subtitle_not_final", v || null)}
+                      placeholder="Leave empty to use default subtitle"
+                      fieldRefs={fieldRefs}
+                      setLastFocusedField={setLastFocusedField}
+                      resolveTemplate={resolveTemplate}
+                    />
+                    <TemplateField
+                      id="postgame_conditional.description_not_final"
+                      label="Description"
+                      value={postgameCond.description_not_final || ""}
+                      onChange={(v) => updatePostgameCond("description_not_final", v || null)}
+                      placeholder="The game between {team_name} and {opponent.last} has not yet ended."
+                      fieldRefs={fieldRefs}
+                      setLastFocusedField={setLastFocusedField}
+                      resolveTemplate={resolveTemplate}
+                    />
+                  </div>
+                </div>
               )}
             </div>
 
@@ -2099,31 +2147,79 @@ function FillersTab({ formData, setFormData, isTeamTemplate, fieldRefs, setLastF
                     checked={idleCond.enabled}
                     onCheckedChange={() => updateIdleCond("enabled", !idleCond.enabled)}
                   />
-                  <span className="text-sm">Use conditional description based on last game status</span>
+                  <span className="text-sm">Use conditional content based on last game status</span>
                 </label>
                 {idleCond.enabled && (
-                  <>
-                    <TemplateField
-                      id="idle_conditional.description_final"
-                      label="✓ If last game is final:"
-                      value={idleCond.description_final || ""}
-                      onChange={(v) => updateIdleCond("description_final", v || null)}
-                      placeholder="The {team_name} {result_text.last} the {opponent.last} {final_score.last}"
-                      fieldRefs={fieldRefs}
-                      setLastFocusedField={setLastFocusedField}
-                      resolveTemplate={resolveTemplate}
-                    />
-                    <TemplateField
-                      id="idle_conditional.description_not_final"
-                      label="⏳ If last game is NOT final:"
-                      value={idleCond.description_not_final || ""}
-                      onChange={(v) => updateIdleCond("description_not_final", v || null)}
-                      placeholder="The {team_name} last played against {opponent.last}."
-                      fieldRefs={fieldRefs}
-                      setLastFocusedField={setLastFocusedField}
-                      resolveTemplate={resolveTemplate}
-                    />
-                  </>
+                  <div className="space-y-4">
+                    {/* Final game conditionals */}
+                    <div className="space-y-2">
+                      <span className="text-sm font-medium text-muted-foreground">✓ If last game is final:</span>
+                      <TemplateField
+                        id="idle_conditional.title_final"
+                        label="Title"
+                        value={idleCond.title_final || ""}
+                        onChange={(v) => updateIdleCond("title_final", v || null)}
+                        placeholder="Leave empty to use default title"
+                        fieldRefs={fieldRefs}
+                        setLastFocusedField={setLastFocusedField}
+                        resolveTemplate={resolveTemplate}
+                      />
+                      <TemplateField
+                        id="idle_conditional.subtitle_final"
+                        label="Subtitle"
+                        value={idleCond.subtitle_final || ""}
+                        onChange={(v) => updateIdleCond("subtitle_final", v || null)}
+                        placeholder="Leave empty to use default subtitle"
+                        fieldRefs={fieldRefs}
+                        setLastFocusedField={setLastFocusedField}
+                        resolveTemplate={resolveTemplate}
+                      />
+                      <TemplateField
+                        id="idle_conditional.description_final"
+                        label="Description"
+                        value={idleCond.description_final || ""}
+                        onChange={(v) => updateIdleCond("description_final", v || null)}
+                        placeholder="The {team_name} {result_text.last} the {opponent.last} {final_score.last}"
+                        fieldRefs={fieldRefs}
+                        setLastFocusedField={setLastFocusedField}
+                        resolveTemplate={resolveTemplate}
+                      />
+                    </div>
+                    {/* Not final game conditionals */}
+                    <div className="space-y-2">
+                      <span className="text-sm font-medium text-muted-foreground">⏳ If last game is NOT final:</span>
+                      <TemplateField
+                        id="idle_conditional.title_not_final"
+                        label="Title"
+                        value={idleCond.title_not_final || ""}
+                        onChange={(v) => updateIdleCond("title_not_final", v || null)}
+                        placeholder="Leave empty to use default title"
+                        fieldRefs={fieldRefs}
+                        setLastFocusedField={setLastFocusedField}
+                        resolveTemplate={resolveTemplate}
+                      />
+                      <TemplateField
+                        id="idle_conditional.subtitle_not_final"
+                        label="Subtitle"
+                        value={idleCond.subtitle_not_final || ""}
+                        onChange={(v) => updateIdleCond("subtitle_not_final", v || null)}
+                        placeholder="Leave empty to use default subtitle"
+                        fieldRefs={fieldRefs}
+                        setLastFocusedField={setLastFocusedField}
+                        resolveTemplate={resolveTemplate}
+                      />
+                      <TemplateField
+                        id="idle_conditional.description_not_final"
+                        label="Description"
+                        value={idleCond.description_not_final || ""}
+                        onChange={(v) => updateIdleCond("description_not_final", v || null)}
+                        placeholder="The {team_name} last played against {opponent.last}."
+                        fieldRefs={fieldRefs}
+                        setLastFocusedField={setLastFocusedField}
+                        resolveTemplate={resolveTemplate}
+                      />
+                    </div>
+                  </div>
                 )}
               </div>
 

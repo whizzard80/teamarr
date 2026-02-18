@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Teamarr</Name>
+  <Repository>ghcr.io/pharaoh-labs/teamarr:latest</Repository>
+  <Registry>https://ghcr.io/pharaoh-labs/teamarr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Pharaoh-Labs/teamarr</Support>
+  <Project>https://github.com/Pharaoh-Labs/teamarr</Project>
+  <Overview>Teamarr creates rich, dynamic Electronic Program Guide (EPG) data for your sports channels. It fetches real-time schedules from ESPN and generates XMLTV-format EPG files with intelligent descriptions that adapt based on game context&#x2014;streaks, odds, matchups, and more.&#xD;
+&#xD;
+Features:&#xD;
+- Team-Based EPG: Add your favorite teams and get 24/7 EPG coverage&#xD;
+- Event-Based EPG: Automatically match streams from your M3U provider to ESPN events&#xD;
+- Smart Descriptions: Conditional templates that change based on win streaks, betting odds, home/away status&#xD;
+- Dispatcharr Integration: Seamless channel lifecycle management with automatic channel creation and deletion&#xD;
+- Multi-Sport Support: NFL, NBA, NHL, MLB, MLS, college sports, Premier League, La Liga, and more</Overview>
+  <Category>MediaApp:Video MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:9195]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Pharaoh-Labs/teamarr/main/unraid-template/my-teamarr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/Pharaoh-Labs/teamarr/main/frontend/public/logo.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled></DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI Port" Target="9195" Default="9195" Mode="tcp" Description="Web interface port for Teamarr" Type="Port" Display="always" Required="true" Mask="false">9195</Config>
+  <Config Name="AppData" Target="/app/data" Default="/mnt/user/appdata/teamarr" Mode="rw" Description="Path to store Teamarr configuration and data" Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/teamarr</Config>
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Timezone for the container (e.g., America/New_York, Europe/London)" Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+</Container>

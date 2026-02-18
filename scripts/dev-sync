@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Sync current Cursor worktree code to main repo and restart container.
+# Usage: bash /home/crow/teamarr/scripts/dev-sync [worktree_path]
+#   e.g. bash /home/crow/teamarr/scripts/dev-sync /home/crow/.cursor/worktrees/teamarr__SSH__teamarr-vm_/tcy
+
+set -e
+MAIN_REPO="/home/crow/teamarr"
+WORKTREE="${1:-$(pwd)}"
+
+if [ ! -d "$WORKTREE/teamarr" ]; then
+    echo "Error: $WORKTREE/teamarr not found. Pass the worktree root as argument."
+    exit 1
+fi
+
+echo "Syncing: $WORKTREE → $MAIN_REPO"
+rsync -a --delete --exclude='__pycache__' --exclude='*.pyc' \
+    "$WORKTREE/teamarr/" "$MAIN_REPO/teamarr/"
+
+if [ -f "$WORKTREE/app.py" ]; then
+    cp "$WORKTREE/app.py" "$MAIN_REPO/app.py"
+fi
+
+echo "Restarting container..."
+cd "$MAIN_REPO" && docker compose restart teamarr
+
+echo "Done. View logs: docker compose logs -f teamarr"

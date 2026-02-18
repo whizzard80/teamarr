@@ -122,6 +122,7 @@ class ChannelManager:
 
     # Class-level caches shared across instances (keyed by base URL)
     _caches: dict[str, ChannelCache] = {}
+    _locks: dict[str, threading.Lock] = {}
 
     def __init__(self, client: DispatcharrClient):
         """Initialize channel manager.
@@ -131,7 +132,7 @@ class ChannelManager:
         """
         self._client = client
         self._url = client._base_url
-        self._lock = threading.Lock()
+        self._lock = self._locks.setdefault(self._url, threading.Lock())
 
         # Initialize cache for this URL if not exists
         if self._url not in self._caches:
@@ -152,7 +153,7 @@ class ChannelManager:
         """Ensure cache is populated. Returns cached channels list."""
         if not self._cache.is_populated():
             raw_channels = self._client.paginated_get(
-                "/api/channels/channels/?page_size=1000",
+                "/api/channels/channels/?page=1&page_size=1000",
                 error_context="channels",
             )
             channels = [DispatcharrChannel.from_api(c) for c in raw_channels]
@@ -174,7 +175,7 @@ class ChannelManager:
                 return self._ensure_cache()
 
             raw_channels = self._client.paginated_get(
-                "/api/channels/channels/?page_size=1000",
+                "/api/channels/channels/?page=1&page_size=1000",
                 error_context="channels",
             )
             return [DispatcharrChannel.from_api(c) for c in raw_channels]
@@ -424,7 +425,7 @@ class ChannelManager:
         Returns:
             OperationResult with success status
         """
-        response = self._client.post(
+        response = self._client.post_form(
             f"/api/channels/channels/{channel_id}/set-epg/",
             {"epg_data_id": epg_data_id},
         )
@@ -648,7 +649,7 @@ class ChannelManager:
             List of EPGData dicts with id, tvg_id, name, icon_url, epg_source
         """
         all_epg_data = self._client.paginated_get(
-            "/api/epg/epgdata/?page_size=500",
+            "/api/epg/epgdata/?page=1&page_size=500",
             error_context="EPG data",
         )
 

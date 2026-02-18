@@ -7,7 +7,6 @@ import type {
   EventGroupListResponse,
   EventGroupUpdate,
   PreviewGroupResponse,
-  ProcessGroupResponse,
 } from "./types"
 
 export async function listGroups(
@@ -67,22 +66,6 @@ export async function promoteGroup(
   groupId: number
 ): Promise<PromoteGroupResponse> {
   return api.post(`/groups/${groupId}/promote`)
-}
-
-export async function processGroup(
-  groupId: number
-): Promise<ProcessGroupResponse> {
-  return api.post(`/groups/${groupId}/process`)
-}
-
-export async function processAllGroups(): Promise<{
-  groups_processed: number
-  total_channels_created: number
-  total_errors: number
-  duration_seconds: number
-  results: ProcessGroupResponse[]
-}> {
-  return api.post("/groups/process-all")
 }
 
 export async function previewGroup(
@@ -195,4 +178,29 @@ export async function deleteGroupTemplate(
   assignmentId: number
 ): Promise<void> {
   return api.delete(`/groups/${groupId}/templates/${assignmentId}`)
+}
+
+// Bulk template assignment for multiple groups
+export interface BulkTemplateAssignment {
+  template_id: number
+  sports?: string[] | null
+  leagues?: string[] | null
+}
+
+export interface BulkTemplatesRequest {
+  group_ids: number[]
+  assignments: BulkTemplateAssignment[]
+}
+
+export interface BulkTemplatesResponse {
+  success: boolean
+  groups_updated: number
+  assignments_per_group: number
+  message: string
+}
+
+export async function bulkSetGroupTemplates(
+  data: BulkTemplatesRequest
+): Promise<BulkTemplatesResponse> {
+  return api.put("/groups/bulk-templates", data)
 }

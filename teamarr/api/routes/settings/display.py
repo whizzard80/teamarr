@@ -129,15 +129,11 @@ def update_reconciliation_settings(update: ReconciliationSettingsModel):
 def get_display_settings():
     """Get display/formatting settings."""
     from teamarr.database.settings import get_all_settings
+    from teamarr.database.settings.read import get_tsdb_api_key
 
     with get_db() as conn:
         settings = get_all_settings(conn)
-
-    # Get tsdb_api_key directly from DB (not in display dataclass)
-    with get_db() as conn:
-        cursor = conn.execute("SELECT tsdb_api_key FROM settings WHERE id = 1")
-        row = cursor.fetchone()
-        tsdb_api_key = row["tsdb_api_key"] if row else None
+        tsdb_api_key = get_tsdb_api_key(conn)
 
     return DisplaySettingsModel(
         time_format=settings.display.time_format,
@@ -182,12 +178,11 @@ def update_display_settings_endpoint(update: DisplaySettingsModel):
         xmltv_generator_url=update.xmltv_generator_url,
     )
 
+    from teamarr.database.settings.read import get_tsdb_api_key
+
     with get_db() as conn:
         settings = get_all_settings(conn)
-        # Get tsdb_api_key directly
-        cursor = conn.execute("SELECT tsdb_api_key FROM settings WHERE id = 1")
-        row = cursor.fetchone()
-        tsdb_api_key = row["tsdb_api_key"] if row else None
+        tsdb_api_key = get_tsdb_api_key(conn)
 
     return DisplaySettingsModel(
         time_format=settings.display.time_format,

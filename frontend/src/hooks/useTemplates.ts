@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   listTemplates,
-  getTemplate,
   createTemplate,
   updateTemplate,
   deleteTemplate,
@@ -12,14 +11,6 @@ export function useTemplates() {
   return useQuery({
     queryKey: ["templates"],
     queryFn: listTemplates,
-  })
-}
-
-export function useTemplate(templateId: number) {
-  return useQuery({
-    queryKey: ["template", templateId],
-    queryFn: () => getTemplate(templateId),
-    enabled: templateId > 0,
   })
 }
 

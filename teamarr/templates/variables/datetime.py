@@ -15,6 +15,7 @@ from teamarr.templates.variables.registry import (
 from teamarr.utilities.tz import (
     format_time,
     now_user,
+    strftime_compat,
     to_user_tz,
 )
 
@@ -36,7 +37,7 @@ def extract_game_date(ctx: TemplateContext, game_ctx: GameContext | None) -> str
     dt = _get_local_time(game_ctx)
     if not dt:
         return ""
-    return dt.strftime("%A, %B %-d, %Y")
+    return strftime_compat(dt, "%A, %B %-d, %Y")
 
 
 @register_variable(
@@ -49,7 +50,7 @@ def extract_game_date_short(ctx: TemplateContext, game_ctx: GameContext | None) 
     dt = _get_local_time(game_ctx)
     if not dt:
         return ""
-    return dt.strftime("%b %-d")
+    return strftime_compat(dt, "%b %-d")
 
 
 @register_variable(
@@ -160,7 +161,7 @@ def extract_relative_day(ctx: TemplateContext, game_ctx: GameContext | None) -> 
     elif delta <= 6:
         return dt.strftime("%A").lower()
     else:
-        return dt.strftime("%b %-d")  # Keep month title case (Jan 25)
+        return strftime_compat(dt, "%b %-d")  # Keep month title case (Jan 25)
 
 
 @register_variable(
@@ -184,4 +185,4 @@ def extract_relative_day_title(ctx: TemplateContext, game_ctx: GameContext | Non
     elif delta <= 6:
         return dt.strftime("%A")
     else:
-        return dt.strftime("%b %-d")
+        return strftime_compat(dt, "%b %-d")

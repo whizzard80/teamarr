@@ -66,12 +66,25 @@ class TeamFilterEntry(BaseModel):
     name: str | None = None  # For display only, not used in matching
 
 
+class SoccerFollowedTeam(BaseModel):
+    """A soccer team to follow for teams mode.
+
+    Leagues are auto-discovered from team_cache at processing time.
+    """
+
+    provider: str = "espn"  # e.g., "espn", "tsdb"
+    team_id: str  # provider_team_id from team_cache
+    name: str | None = None  # For display only
+
+
 class GroupCreate(BaseModel):
     """Create event EPG group request."""
 
     name: str = Field(..., min_length=1, max_length=100)
     display_name: str | None = Field(None, max_length=100)  # Optional display name override
     leagues: list[str] = Field(..., min_length=1)
+    soccer_mode: str | None = None  # 'all', 'teams', 'manual', or None (non-soccer)
+    soccer_followed_teams: list[SoccerFollowedTeam] | None = None  # Teams to follow
     group_mode: str = "single"  # "single" or "multi" - persisted to preserve user intent
     parent_group_id: int | None = None
     template_id: int | None = None
@@ -131,6 +144,8 @@ class GroupUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     display_name: str | None = Field(None, max_length=100)  # Optional display name override
     leagues: list[str] | None = None
+    soccer_mode: str | None = None  # 'all', 'teams', 'manual', or None (non-soccer)
+    soccer_followed_teams: list[SoccerFollowedTeam] | None = None  # Teams to follow
     group_mode: str | None = None  # "single" or "multi" - persisted to preserve user intent
     parent_group_id: int | None = None
     template_id: int | None = None
@@ -199,6 +214,8 @@ class GroupUpdate(BaseModel):
     clear_custom_regex_event_name: bool = False
     clear_include_teams: bool = False
     clear_exclude_teams: bool = False
+    clear_soccer_mode: bool = False
+    clear_soccer_followed_teams: bool = False
 
     @field_validator("channel_profile_ids", mode="before")
     @classmethod
@@ -213,9 +230,12 @@ class GroupResponse(BaseModel):
     name: str
     display_name: str | None = None  # Optional display name override for UI
     leagues: list[str]
+    soccer_mode: str | None = None  # 'all', 'teams', 'manual', or None (non-soccer)
+    soccer_followed_teams: list[SoccerFollowedTeam] | None = None  # Teams to follow
     group_mode: str = "single"  # "single" or "multi" - persisted to preserve user intent
     parent_group_id: int | None = None
     template_id: int | None = None
+    group_template_count: int = 0  # Count of templates via Manage Templates
     channel_start_number: int | None = None
     channel_group_id: int | None = None
     channel_group_mode: str = "static"  # "static", "sport", "league"
@@ -326,12 +346,23 @@ class BulkGroupItem(BaseModel):
     m3u_account_name: str
 
 
+class BulkTemplateAssignmentCreate(BaseModel):
+    """Template assignment for bulk group creation."""
+
+    template_id: int
+    sports: list[str] | None = None
+    leagues: list[str] | None = None
+
+
 class BulkGroupSettings(BaseModel):
     """Shared settings for bulk group creation."""
 
     group_mode: str = "single"  # "single" or "multi"
     leagues: list[str] = Field(..., min_length=1)
-    template_id: int | None = None
+    soccer_mode: str | None = None  # 'all', 'teams', 'manual', or None (non-soccer)
+    soccer_followed_teams: list[SoccerFollowedTeam] | None = None  # Teams to follow
+    template_id: int | None = None  # Legacy: default template
+    template_assignments: list[BulkTemplateAssignmentCreate] | None = None  # New: managed templates
     channel_group_id: int | None = None
     channel_group_mode: str = "static"  # "static", "sport", "league"
     channel_profile_ids: list[str | int] | None = None  # IDs or "{sport}", "{league}"
@@ -386,6 +417,8 @@ class BulkGroupUpdateRequest(BaseModel):
 
     # Updateable fields (all optional - only provided fields are applied)
     leagues: list[str] | None = None
+    soccer_mode: str | None = None  # 'all', 'teams', 'manual', or None (non-soccer)
+    soccer_followed_teams: list[SoccerFollowedTeam] | None = None  # Teams to follow
     template_id: int | None = None
     channel_group_id: int | None = None
     channel_group_mode: str | None = None
@@ -403,6 +436,8 @@ class BulkGroupUpdateRequest(BaseModel):
     clear_channel_profile_ids: bool = False
     clear_stream_profile_id: bool = False
     clear_stream_timezone: bool = False
+    clear_soccer_mode: bool = False
+    clear_soccer_followed_teams: bool = False
 
     @field_validator("channel_profile_ids", mode="before")
     @classmethod
@@ -529,6 +564,11 @@ def list_groups(
         if include_stats:
             stats = get_all_group_stats(conn)
 
+        # Get group_templates counts for all groups
+        from teamarr.database.groups import get_group_template_counts
+
+        group_template_counts = get_group_template_counts(conn)
+
     # Fetch fresh M3U account names from Dispatcharr
     m3u_account_names: dict[int, str] = {}
     account_ids = {g.m3u_account_id for g in groups if g.m3u_account_id}
@@ -554,11 +594,17 @@ def list_groups(
                 name=g.name,
                 display_name=g.display_name,
                 leagues=g.leagues,
+                soccer_mode=g.soccer_mode,
+                soccer_followed_teams=[SoccerFollowedTeam(**t) for t in g.soccer_followed_teams]
+                if g.soccer_followed_teams
+                else None,
                 group_mode=g.group_mode,
                 parent_group_id=g.parent_group_id,
                 template_id=g.template_id,
+                group_template_count=group_template_counts.get(g.id, 0),
                 channel_start_number=g.channel_start_number,
                 channel_group_id=g.channel_group_id,
+                channel_group_mode=g.channel_group_mode,
                 channel_profile_ids=g.channel_profile_ids,
                 duplicate_event_handling=g.duplicate_event_handling,
                 channel_assignment_mode=g.channel_assignment_mode,
@@ -650,6 +696,10 @@ def create_group(request: GroupCreate):
             name=request.name,
             leagues=request.leagues,
             display_name=request.display_name,
+            soccer_mode=request.soccer_mode,
+            soccer_followed_teams=[t.model_dump() for t in request.soccer_followed_teams]
+            if request.soccer_followed_teams
+            else None,
             group_mode=request.group_mode,
             parent_group_id=request.parent_group_id,
             template_id=request.template_id,
@@ -716,6 +766,10 @@ def create_group(request: GroupCreate):
         name=group.name,
         display_name=group.display_name,
         leagues=group.leagues,
+        soccer_mode=group.soccer_mode,
+        soccer_followed_teams=[SoccerFollowedTeam(**t) for t in group.soccer_followed_teams]
+        if group.soccer_followed_teams
+        else None,
         group_mode=group.group_mode,
         parent_group_id=group.parent_group_id,
         template_id=group.template_id,
@@ -743,6 +797,12 @@ def create_group(request: GroupCreate):
         custom_regex_date_enabled=group.custom_regex_date_enabled,
         custom_regex_time=group.custom_regex_time,
         custom_regex_time_enabled=group.custom_regex_time_enabled,
+        custom_regex_league=group.custom_regex_league,
+        custom_regex_league_enabled=group.custom_regex_league_enabled,
+        custom_regex_fighters=group.custom_regex_fighters,
+        custom_regex_fighters_enabled=group.custom_regex_fighters_enabled,
+        custom_regex_event_name=group.custom_regex_event_name,
+        custom_regex_event_name_enabled=group.custom_regex_event_name_enabled,
         skip_builtin_filter=group.skip_builtin_filter,
         include_teams=[TeamFilterEntry(**t) for t in group.include_teams]
         if group.include_teams
@@ -780,7 +840,7 @@ def create_groups_bulk(request: BulkGroupCreateRequest):
     All groups will be created with the same mode, leagues, and settings.
     Useful for importing multiple groups from the same M3U account.
     """
-    from teamarr.database.groups import create_group, get_group_by_name
+    from teamarr.database.groups import add_group_template, create_group, get_group_by_name
 
     # Validate settings
     validate_group_fields(
@@ -812,12 +872,23 @@ def create_groups_bulk(request: BulkGroupCreateRequest):
                     continue
 
                 # Create the group
+                # Use legacy template_id only if no template_assignments provided
+                legacy_template_id = request.settings.template_id
+                if request.settings.template_assignments:
+                    legacy_template_id = None  # Use group_templates instead
+
                 group_id = create_group(
                     conn,
                     name=item.m3u_group_name,
                     leagues=request.settings.leagues,
+                    soccer_mode=request.settings.soccer_mode,
+                    soccer_followed_teams=(
+                        [t.model_dump() for t in request.settings.soccer_followed_teams]
+                        if request.settings.soccer_followed_teams
+                        else None
+                    ),
                     group_mode=request.settings.group_mode,
-                    template_id=request.settings.template_id,
+                    template_id=legacy_template_id,
                     channel_group_id=request.settings.channel_group_id,
                     channel_group_mode=request.settings.channel_group_mode,
                     channel_profile_ids=request.settings.channel_profile_ids,
@@ -832,6 +903,17 @@ def create_groups_bulk(request: BulkGroupCreateRequest):
                     m3u_account_name=item.m3u_account_name,
                     enabled=request.settings.enabled,
                 )
+
+                # Add template assignments if provided
+                if request.settings.template_assignments:
+                    for assignment in request.settings.template_assignments:
+                        add_group_template(
+                            conn,
+                            group_id=group_id,
+                            template_id=assignment.template_id,
+                            sports=assignment.sports,
+                            leagues=assignment.leagues,
+                        )
 
                 results.append(
                     BulkGroupCreateResult(
@@ -910,6 +992,10 @@ def update_groups_bulk(request: BulkGroupUpdateRequest):
                     conn,
                     group_id,
                     leagues=request.leagues,
+                    soccer_mode=request.soccer_mode,
+                    soccer_followed_teams=[t.model_dump() for t in request.soccer_followed_teams]
+                    if request.soccer_followed_teams
+                    else None,
                     template_id=request.template_id,
                     channel_group_id=request.channel_group_id,
                     channel_group_mode=request.channel_group_mode,
@@ -925,6 +1011,8 @@ def update_groups_bulk(request: BulkGroupUpdateRequest):
                     clear_channel_profile_ids=request.clear_channel_profile_ids,
                     clear_stream_profile_id=request.clear_stream_profile_id,
                     clear_stream_timezone=request.clear_stream_timezone,
+                    clear_soccer_mode=request.clear_soccer_mode,
+                    clear_soccer_followed_teams=request.clear_soccer_followed_teams,
                 )
 
                 results.append(
@@ -955,6 +1043,110 @@ def update_groups_bulk(request: BulkGroupUpdateRequest):
         total_requested=len(request.group_ids),
         total_updated=total_updated,
         total_failed=total_failed,
+    )
+
+
+# =============================================================================
+# Bulk Template Assignments
+# =============================================================================
+
+
+class BulkTemplateAssignment(BaseModel):
+    """A single template assignment in a bulk request."""
+
+    template_id: int
+    sports: list[str] | None = None
+    leagues: list[str] | None = None
+
+
+class BulkTemplatesRequest(BaseModel):
+    """Request to set template assignments for multiple groups."""
+
+    group_ids: list[int]
+    assignments: list[BulkTemplateAssignment]
+
+
+class BulkTemplatesResponse(BaseModel):
+    """Response from bulk template assignment."""
+
+    success: bool
+    groups_updated: int
+    assignments_per_group: int
+    message: str
+
+
+@router.put("/bulk-templates", response_model=BulkTemplatesResponse)
+def bulk_set_group_templates(request: BulkTemplatesRequest):
+    """Replace template assignments for multiple groups.
+
+    This replaces ALL existing template assignments for each group
+    with the new set of assignments. Useful for applying the same
+    template configuration to multiple groups at once.
+    """
+    from teamarr.database.groups import (
+        add_group_template as db_add_template,
+    )
+    from teamarr.database.groups import (
+        delete_group_templates as db_delete_templates,
+    )
+    from teamarr.database.groups import (
+        get_existing_group_ids,
+    )
+    from teamarr.database.templates import get_existing_template_ids
+
+    if not request.group_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No group IDs provided",
+        )
+
+    if not request.assignments:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No template assignments provided",
+        )
+
+    with get_db() as conn:
+        # Verify all groups exist
+        found_ids = get_existing_group_ids(conn, request.group_ids)
+        missing = set(request.group_ids) - found_ids
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Groups not found: {sorted(missing)}",
+            )
+
+        # Verify all templates exist
+        template_ids = list({a.template_id for a in request.assignments})
+        found_template_ids = get_existing_template_ids(conn, template_ids)
+        missing_templates = set(template_ids) - found_template_ids
+        if missing_templates:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Templates not found: {sorted(missing_templates)}",
+            )
+
+        # For each group: delete existing assignments, add new ones
+        for group_id in request.group_ids:
+            db_delete_templates(conn, group_id)
+
+            for assignment in request.assignments:
+                db_add_template(
+                    conn,
+                    group_id,
+                    assignment.template_id,
+                    assignment.sports,
+                    assignment.leagues,
+                )
+
+    return BulkTemplatesResponse(
+        success=True,
+        groups_updated=len(request.group_ids),
+        assignments_per_group=len(request.assignments),
+        message=(
+            f"Applied {len(request.assignments)} template assignment(s) "
+            f"to {len(request.group_ids)} group(s)"
+        ),
     )
 
 
@@ -993,6 +1185,10 @@ def get_group_by_id(group_id: int):
         name=group.name,
         display_name=group.display_name,
         leagues=group.leagues,
+        soccer_mode=group.soccer_mode,
+        soccer_followed_teams=[SoccerFollowedTeam(**t) for t in group.soccer_followed_teams]
+        if group.soccer_followed_teams
+        else None,
         group_mode=group.group_mode,
         parent_group_id=group.parent_group_id,
         template_id=group.template_id,
@@ -1020,6 +1216,12 @@ def get_group_by_id(group_id: int):
         custom_regex_date_enabled=group.custom_regex_date_enabled,
         custom_regex_time=group.custom_regex_time,
         custom_regex_time_enabled=group.custom_regex_time_enabled,
+        custom_regex_league=group.custom_regex_league,
+        custom_regex_league_enabled=group.custom_regex_league_enabled,
+        custom_regex_fighters=group.custom_regex_fighters,
+        custom_regex_fighters_enabled=group.custom_regex_fighters_enabled,
+        custom_regex_event_name=group.custom_regex_event_name,
+        custom_regex_event_name_enabled=group.custom_regex_event_name_enabled,
         skip_builtin_filter=group.skip_builtin_filter,
         include_teams=[TeamFilterEntry(**t) for t in group.include_teams]
         if group.include_teams
@@ -1101,6 +1303,10 @@ def update_group_by_id(group_id: int, request: GroupUpdate):
                 name=request.name,
                 display_name=request.display_name,
                 leagues=request.leagues,
+                soccer_mode=request.soccer_mode,
+                soccer_followed_teams=[t.model_dump() for t in request.soccer_followed_teams]
+                if request.soccer_followed_teams
+                else None,
                 group_mode=request.group_mode,
                 parent_group_id=request.parent_group_id,
                 template_id=request.template_id,
@@ -1167,6 +1373,8 @@ def update_group_by_id(group_id: int, request: GroupUpdate):
                 clear_custom_regex_event_name=request.clear_custom_regex_event_name,
                 clear_include_teams=request.clear_include_teams,
                 clear_exclude_teams=request.clear_exclude_teams,
+                clear_soccer_mode=request.clear_soccer_mode,
+                clear_soccer_followed_teams=request.clear_soccer_followed_teams,
             )
         except ValueError as e:
             raise HTTPException(
@@ -1176,7 +1384,9 @@ def update_group_by_id(group_id: int, request: GroupUpdate):
 
         # Clean up XMLTV content when group is disabled
         if request.enabled is False:
-            conn.execute("DELETE FROM event_epg_xmltv WHERE group_id = ?", (group_id,))
+            from teamarr.database.groups import delete_group_xmltv
+
+            delete_group_xmltv(conn, group_id)
 
         group = get_group(conn, group_id)
         channel_count = get_group_channel_count(conn, group_id)
@@ -1188,6 +1398,10 @@ def update_group_by_id(group_id: int, request: GroupUpdate):
         name=group.name,
         display_name=group.display_name,
         leagues=group.leagues,
+        soccer_mode=group.soccer_mode,
+        soccer_followed_teams=[SoccerFollowedTeam(**t) for t in group.soccer_followed_teams]
+        if group.soccer_followed_teams
+        else None,
         group_mode=group.group_mode,
         parent_group_id=group.parent_group_id,
         template_id=group.template_id,
@@ -1215,6 +1429,12 @@ def update_group_by_id(group_id: int, request: GroupUpdate):
         custom_regex_date_enabled=group.custom_regex_date_enabled,
         custom_regex_time=group.custom_regex_time,
         custom_regex_time_enabled=group.custom_regex_time_enabled,
+        custom_regex_league=group.custom_regex_league,
+        custom_regex_league_enabled=group.custom_regex_league_enabled,
+        custom_regex_fighters=group.custom_regex_fighters,
+        custom_regex_fighters_enabled=group.custom_regex_fighters_enabled,
+        custom_regex_event_name=group.custom_regex_event_name,
+        custom_regex_event_name_enabled=group.custom_regex_event_name_enabled,
         skip_builtin_filter=group.skip_builtin_filter,
         include_teams=[TeamFilterEntry(**t) for t in group.include_teams]
         if group.include_teams
@@ -1513,32 +1733,6 @@ def list_dispatcharr_channel_groups() -> dict:
 # =============================================================================
 
 
-class ProcessGroupResponse(BaseModel):
-    """Response from processing a group."""
-
-    group_id: int
-    group_name: str
-    streams_fetched: int
-    streams_matched: int
-    streams_unmatched: int
-    channels_created: int
-    channels_existing: int
-    channels_skipped: int
-    channel_errors: int
-    errors: list[str]
-    duration_seconds: float
-
-
-class ProcessAllResponse(BaseModel):
-    """Response from processing all groups."""
-
-    groups_processed: int
-    total_channels_created: int
-    total_errors: int
-    duration_seconds: float
-    results: list[ProcessGroupResponse]
-
-
 class PreviewStreamModel(BaseModel):
     """Individual stream preview result."""
 
@@ -1734,106 +1928,6 @@ def get_raw_streams(group_id: int):
     )
 
 
-@router.post("/{group_id}/process", response_model=ProcessGroupResponse)
-def process_group(group_id: int):
-    """Process an event EPG group.
-
-    Fetches streams from Dispatcharr, matches them to events,
-    and creates/updates channels.
-    """
-    from datetime import date
-
-    from teamarr.database.groups import get_group
-    from teamarr.dispatcharr import get_factory
-    from teamarr.services import create_group_service
-
-    with get_db() as conn:
-        group = get_group(conn, group_id)
-        if not group:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Group {group_id} not found",
-            )
-
-    # Get Dispatcharr client
-    factory = get_factory(get_db)
-    client = factory.get_client() if factory else None
-
-    # Process the group
-    group_service = create_group_service(get_db, client)
-    result = group_service.process_group(group_id, date.today())
-
-    duration = 0.0
-    if result.started_at and result.completed_at:
-        duration = (result.completed_at - result.started_at).total_seconds()
-
-    return ProcessGroupResponse(
-        group_id=result.group_id,
-        group_name=result.group_name,
-        streams_fetched=result.streams.fetched,
-        streams_matched=result.streams.matched,
-        streams_unmatched=result.streams.unmatched,
-        channels_created=result.channels.created,
-        channels_existing=result.channels.existing,
-        channels_skipped=result.channels.skipped,
-        channel_errors=result.channels.errors,
-        errors=result.errors,
-        duration_seconds=duration,
-    )
-
-
-@router.post("/process-all", response_model=ProcessAllResponse)
-def process_all_groups():
-    """Process all active event EPG groups.
-
-    Fetches streams from Dispatcharr, matches them to events,
-    and creates/updates channels for all active groups.
-    """
-    from datetime import date
-
-    from teamarr.dispatcharr import get_factory
-    from teamarr.services import create_group_service
-
-    # Get Dispatcharr client
-    factory = get_factory(get_db)
-    client = factory.get_client() if factory else None
-
-    # Process all groups
-    group_service = create_group_service(get_db, client)
-    batch_result = group_service.process_all_groups(date.today())
-
-    duration = 0.0
-    if batch_result.started_at and batch_result.completed_at:
-        duration = (batch_result.completed_at - batch_result.started_at).total_seconds()
-
-    return ProcessAllResponse(
-        groups_processed=batch_result.groups_processed,
-        total_channels_created=batch_result.total_channels_created,
-        total_errors=batch_result.total_errors,
-        duration_seconds=duration,
-        results=[
-            ProcessGroupResponse(
-                group_id=r.group_id,
-                group_name=r.group_name,
-                streams_fetched=r.streams.fetched,
-                streams_matched=r.streams.matched,
-                streams_unmatched=r.streams.unmatched,
-                channels_created=r.channels.created,
-                channels_existing=r.channels.existing,
-                channels_skipped=r.channels.skipped,
-                channel_errors=r.channels.errors,
-                errors=r.errors,
-                duration_seconds=(
-                    (r.completed_at - r.started_at).total_seconds()
-                    if r.started_at and r.completed_at
-                    else 0.0
-                ),
-            )
-            for r in batch_result.results
-        ],
-    )
-
-
 # =============================================================================
 # GROUP XMLTV ENDPOINTS
 # =============================================================================
@@ -1849,10 +1943,9 @@ def get_group_xmltv(group_id: int) -> Response:
 
     Returns 404 if the group hasn't been processed yet.
     """
-    from teamarr.database.groups import get_group
+    from teamarr.database.groups import get_group, get_group_xmltv_with_metadata
 
     with get_db() as conn:
-        # Verify group exists
         group = get_group(conn, group_id)
         if not group:
             raise HTTPException(
@@ -1860,24 +1953,20 @@ def get_group_xmltv(group_id: int) -> Response:
                 detail=f"Group {group_id} not found",
             )
 
-        # Get stored XMLTV
-        row = conn.execute(
-            "SELECT xmltv_content, updated_at FROM event_epg_xmltv WHERE group_id = ?",
-            (group_id,),
-        ).fetchone()
-
-        if not row:
+        result = get_group_xmltv_with_metadata(conn, group_id)
+        if not result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No XMLTV generated for group '{group.name}'. Process the group first.",
             )
 
+    xmltv_content, updated_at = result
     return Response(
-        content=row["xmltv_content"],
+        content=xmltv_content,
         media_type="application/xml",
         headers={
             "Content-Disposition": f"inline; filename=teamarr-group-{group_id}.xml",
-            "X-Generated-At": row["updated_at"] if row["updated_at"] else "",
+            "X-Generated-At": updated_at,
         },
     )
 
@@ -1889,29 +1978,14 @@ def get_combined_xmltv() -> Response:
     Merges XMLTV content from all groups that have been processed.
     This is useful for having a single EPG source in Dispatcharr.
     """
-    from teamarr.database.groups import get_all_groups
+    from teamarr.database.groups import get_all_group_xmltv
     from teamarr.database.settings import get_display_settings
     from teamarr.utilities.xmltv import merge_xmltv_content
 
     with get_db() as conn:
-        # Get all enabled groups
-        groups = get_all_groups(conn, include_disabled=False)
-        group_ids = [g.id for g in groups]
+        xmltv_contents = get_all_group_xmltv(conn)
 
-        if not group_ids:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No active event groups found",
-            )
-
-        # Get all XMLTV content
-        placeholders = ",".join("?" * len(group_ids))
-        rows = conn.execute(
-            f"SELECT xmltv_content FROM event_epg_xmltv WHERE group_id IN ({placeholders})",
-            group_ids,
-        ).fetchall()
-
-        if not rows:
+        if not xmltv_contents:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No XMLTV generated for any groups. Process groups first.",
@@ -1920,7 +1994,7 @@ def get_combined_xmltv() -> Response:
         display_settings = get_display_settings(conn)
 
     combined = merge_xmltv_content(
-        [row["xmltv_content"] for row in rows],
+        xmltv_contents,
         generator_name=display_settings.xmltv_generator_name,
         generator_url=display_settings.xmltv_generator_url,
     )
@@ -1971,16 +2045,11 @@ def reorder_groups(request: ReorderGroupsRequest):
             detail="No groups to reorder",
         )
 
-    with get_db() as conn:
-        updated = 0
-        for item in request.groups:
-            conn.execute(
-                "UPDATE event_epg_groups SET sort_order = ? WHERE id = ?",
-                (item.sort_order, item.group_id),
-            )
-            updated += 1
+    from teamarr.database.groups import reorder_groups
 
-        conn.commit()
+    with get_db() as conn:
+        items = [(item.sort_order, item.group_id) for item in request.groups]
+        updated = reorder_groups(conn, items)
 
     return ReorderGroupsResponse(
         success=True,
@@ -2027,14 +2096,12 @@ def get_group_templates(group_id: int):
 
     Returns templates ordered by specificity (leagues first, then sports, then default).
     """
+    from teamarr.database.groups import get_group
     from teamarr.database.groups import get_group_templates as db_get_templates
 
     with get_db() as conn:
         # Verify group exists
-        row = conn.execute(
-            "SELECT id FROM event_epg_groups WHERE id = ?", (group_id,)
-        ).fetchone()
-        if not row:
+        if not get_group(conn, group_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Group {group_id} not found",
@@ -2069,28 +2136,25 @@ def add_group_template(group_id: int, request: GroupTemplateCreate):
     3. default (both NULL)
     """
     from teamarr.database.groups import add_group_template as db_add_template
+    from teamarr.database.groups import get_group
+    from teamarr.database.templates import get_template
 
     with get_db() as conn:
         # Verify group exists
-        row = conn.execute(
-            "SELECT id FROM event_epg_groups WHERE id = ?", (group_id,)
-        ).fetchone()
-        if not row:
+        if not get_group(conn, group_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Group {group_id} not found",
             )
 
         # Verify template exists
-        row = conn.execute(
-            "SELECT id, name FROM templates WHERE id = ?", (request.template_id,)
-        ).fetchone()
-        if not row:
+        template = get_template(conn, request.template_id)
+        if not template:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Template {request.template_id} not found",
             )
-        template_name = row["name"]
+        template_name = template.name
 
         assignment_id = db_add_template(
             conn,
@@ -2113,15 +2177,18 @@ def add_group_template(group_id: int, request: GroupTemplateCreate):
 @router.put("/{group_id}/templates/{assignment_id}", response_model=GroupTemplateResponse)
 def update_group_template(group_id: int, assignment_id: int, request: GroupTemplateUpdate):
     """Update a template assignment."""
-    from teamarr.database.groups import update_group_template as db_update_template
+    from teamarr.database.groups import (
+        get_group_template_by_id,
+    )
+    from teamarr.database.groups import (
+        update_group_template as db_update_template,
+    )
+    from teamarr.database.templates import get_template
 
     with get_db() as conn:
         # Verify assignment exists and belongs to this group
-        row = conn.execute(
-            "SELECT * FROM group_templates WHERE id = ? AND group_id = ?",
-            (assignment_id, group_id),
-        ).fetchone()
-        if not row:
+        existing = get_group_template_by_id(conn, assignment_id, group_id=group_id)
+        if not existing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Template assignment {assignment_id} not found in group {group_id}",
@@ -2131,10 +2198,7 @@ def update_group_template(group_id: int, assignment_id: int, request: GroupTempl
         kwargs = {}
         if request.template_id is not None:
             # Verify new template exists
-            t_row = conn.execute(
-                "SELECT id FROM templates WHERE id = ?", (request.template_id,)
-            ).fetchone()
-            if not t_row:
+            if not get_template(conn, request.template_id):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Template {request.template_id} not found",
@@ -2151,41 +2215,31 @@ def update_group_template(group_id: int, assignment_id: int, request: GroupTempl
             db_update_template(conn, assignment_id, **kwargs)
 
         # Fetch updated record
-        row = conn.execute(
-            """SELECT gt.*, t.name as template_name
-               FROM group_templates gt
-               LEFT JOIN templates t ON gt.template_id = t.id
-               WHERE gt.id = ?""",
-            (assignment_id,),
-        ).fetchone()
-
-    import json
-
-    sports = json.loads(row["sports"]) if row["sports"] else None
-    leagues = json.loads(row["leagues"]) if row["leagues"] else None
+        updated = get_group_template_by_id(conn, assignment_id)
 
     return GroupTemplateResponse(
-        id=row["id"],
-        group_id=row["group_id"],
-        template_id=row["template_id"],
-        sports=sports,
-        leagues=leagues,
-        template_name=row["template_name"],
+        id=updated.id,
+        group_id=updated.group_id,
+        template_id=updated.template_id,
+        sports=updated.sports,
+        leagues=updated.leagues,
+        template_name=updated.template_name,
     )
 
 
 @router.delete("/{group_id}/templates/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_group_template(group_id: int, assignment_id: int):
     """Delete a template assignment."""
-    from teamarr.database.groups import delete_group_template as db_delete_template
+    from teamarr.database.groups import (
+        delete_group_template as db_delete_template,
+    )
+    from teamarr.database.groups import (
+        get_group_template_by_id,
+    )
 
     with get_db() as conn:
         # Verify assignment exists and belongs to this group
-        row = conn.execute(
-            "SELECT id FROM group_templates WHERE id = ? AND group_id = ?",
-            (assignment_id, group_id),
-        ).fetchone()
-        if not row:
+        if not get_group_template_by_id(conn, assignment_id, group_id=group_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Template assignment {assignment_id} not found in group {group_id}",

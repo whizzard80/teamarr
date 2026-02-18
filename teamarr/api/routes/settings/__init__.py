@@ -16,6 +16,7 @@ from .channel_numbering import router as channel_numbering_router
 from .dispatcharr import router as dispatcharr_router
 from .display import router as display_router
 from .epg import router as epg_router
+from .gold_zone import router as gold_zone_router
 from .lifecycle import router as lifecycle_router
 from .models import (
     AllSettingsModel,
@@ -24,14 +25,17 @@ from .models import (
     DisplaySettingsModel,
     DurationSettingsModel,
     EPGSettingsModel,
+    GoldZoneSettingsModel,
     LifecycleSettingsModel,
     ReconciliationSettingsModel,
     SchedulerSettingsModel,
+    StreamFilterSettingsModel,
     StreamOrderingRuleModel,
     StreamOrderingSettingsModel,
     TeamFilterSettingsModel,
     UpdateCheckSettingsModel,
 )
+from .stream_filter import router as stream_filter_router
 from .stream_ordering import router as stream_ordering_router
 from .team_filter import router as team_filter_router
 from .update_check import router as update_check_router
@@ -44,10 +48,12 @@ router.include_router(dispatcharr_router)
 router.include_router(lifecycle_router)
 router.include_router(epg_router)
 router.include_router(display_router)
+router.include_router(stream_filter_router)
 router.include_router(team_filter_router)
 router.include_router(channel_numbering_router)
 router.include_router(stream_ordering_router)
 router.include_router(update_check_router)
+router.include_router(gold_zone_router)
 
 
 # =============================================================================
@@ -115,6 +121,11 @@ def get_settings():
             xmltv_generator_name=settings.display.xmltv_generator_name,
             xmltv_generator_url=settings.display.xmltv_generator_url,
         ),
+        stream_filter=StreamFilterSettingsModel(
+            require_event_pattern=settings.stream_filter.require_event_pattern,
+            include_patterns=settings.stream_filter.include_patterns,
+            exclude_patterns=settings.stream_filter.exclude_patterns,
+        ),
         team_filter=TeamFilterSettingsModel(
             include_teams=settings.team_filter.include_teams,
             exclude_teams=settings.team_filter.exclude_teams,
@@ -144,6 +155,10 @@ def get_settings():
             dev_branch=settings.update_check.dev_branch,
             auto_detect_branch=settings.update_check.auto_detect_branch,
         ),
+        gold_zone=GoldZoneSettingsModel(
+            enabled=settings.gold_zone.enabled,
+            channel_number=settings.gold_zone.channel_number,
+        ),
         epg_generation_counter=settings.epg_generation_counter,
         schema_version=settings.schema_version,
         # UI timezone info (read-only)
@@ -164,8 +179,10 @@ __all__ = [
     "LifecycleSettingsModel",
     "ReconciliationSettingsModel",
     "SchedulerSettingsModel",
+    "StreamFilterSettingsModel",
     "StreamOrderingRuleModel",
     "StreamOrderingSettingsModel",
     "TeamFilterSettingsModel",
     "UpdateCheckSettingsModel",
+    "GoldZoneSettingsModel",
 ]

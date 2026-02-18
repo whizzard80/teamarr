@@ -29,6 +29,7 @@ def get_team_filter():
         include_teams=settings.include_teams,
         exclude_teams=settings.exclude_teams,
         mode=settings.mode,
+        bypass_filter_for_playoffs=settings.bypass_filter_for_playoffs,
     )
 
 
@@ -54,6 +55,7 @@ def update_team_filter(update: TeamFilterSettingsUpdate):
             mode=update.mode,
             clear_include_teams=update.clear_include_teams,
             clear_exclude_teams=update.clear_exclude_teams,
+            bypass_filter_for_playoffs=update.bypass_filter_for_playoffs,
         )
         settings = get_team_filter_settings(conn)
 
@@ -62,4 +64,5 @@ def update_team_filter(update: TeamFilterSettingsUpdate):
         include_teams=settings.include_teams,
         exclude_teams=settings.exclude_teams,
         mode=settings.mode,
+        bypass_filter_for_playoffs=settings.bypass_filter_for_playoffs,
     )

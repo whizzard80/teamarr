@@ -57,7 +57,7 @@ import {
 } from "@/hooks/useGroups"
 import { useTemplates } from "@/hooks/useTemplates"
 import type { EventGroup, PreviewGroupResponse } from "@/api/types"
-import { getLeagues } from "@/api/teams"
+import { getLeagues, searchTeams } from "@/api/teams"
 import { LeaguePicker } from "@/components/LeaguePicker"
 import { ChannelProfileSelector } from "@/components/ChannelProfileSelector"
 import { StreamProfileSelector } from "@/components/StreamProfileSelector"
@@ -75,6 +75,95 @@ async function fetchChannelGroups(): Promise<{ id: number; name: string }[]> {
 
 // Helper to get display name (prefer display_name over name)
 const getDisplayName = (group: EventGroup) => group.display_name || group.name
+
+// Team search component for bulk edit soccer teams mode
+interface BulkTeamSearchProps {
+  selectedTeams: Array<{ provider: string; team_id: string; name: string }>
+  onTeamsChange: (teams: Array<{ provider: string; team_id: string; name: string }>) => void
+  searchQuery: string
+  onSearchChange: (query: string) => void
+}
+
+function BulkTeamSearch({ selectedTeams, onTeamsChange, searchQuery, onSearchChange }: BulkTeamSearchProps) {
+  const { data: searchResults, isLoading } = useQuery({
+    queryKey: ["soccer-team-search-bulk", searchQuery],
+    queryFn: () => searchTeams(searchQuery, undefined, "soccer"),
+    enabled: searchQuery.length >= 2,
+    staleTime: 30 * 1000,
+  })
+
+  const filteredResults = useMemo(() => {
+    if (!searchResults?.teams) return []
+    return searchResults.teams.filter(
+      team => !selectedTeams.some(s => s.team_id === team.team_id && s.provider === team.provider)
+    )
+  }, [searchResults, selectedTeams])
+
+  const handleSelect = (team: { provider: string; team_id: string; name: string }) => {
+    onTeamsChange([...selectedTeams, team])
+    onSearchChange('')
+  }
+
+  const handleRemove = (teamId: string, provider: string) => {
+    onTeamsChange(selectedTeams.filter(t => !(t.team_id === teamId && t.provider === provider)))
+  }
+
+  return (
+    <div className="space-y-2">
+      {selectedTeams.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {selectedTeams.map((team) => (
+            <Badge key={`${team.provider}-${team.team_id}`} variant="secondary" className="gap-1">
+              {team.name}
+              <button
+                type="button"
+                onClick={() => handleRemove(team.team_id, team.provider)}
+                className="hover:text-destructive"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Search soccer teams..."
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          className="pl-8 h-8 text-sm"
+        />
+        {isLoading && (
+          <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+        )}
+      </div>
+      {searchQuery.length >= 2 && (
+        <div className="border rounded max-h-40 overflow-y-auto">
+          {isLoading ? (
+            <div className="p-2 text-center text-xs text-muted-foreground">Searching...</div>
+          ) : filteredResults.length > 0 ? (
+            <div className="divide-y">
+              {filteredResults.slice(0, 10).map((team) => (
+                <button
+                  key={`${team.provider}-${team.team_id}`}
+                  type="button"
+                  onClick={() => handleSelect({ provider: team.provider, team_id: team.team_id, name: team.name })}
+                  className="w-full text-left px-2 py-1.5 hover:bg-muted/50 text-sm"
+                >
+                  <div className="font-medium">{team.name}</div>
+                  <div className="text-xs text-muted-foreground">{team.league.toUpperCase()}</div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="p-2 text-center text-xs text-muted-foreground">No teams found</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function EventGroups() {
   const navigate = useNavigate()
@@ -178,10 +267,15 @@ export function EventGroups() {
   const [bulkEditSortOrder, setBulkEditSortOrder] = useState<string>("time")
   const [bulkEditOverlapHandlingEnabled, setBulkEditOverlapHandlingEnabled] = useState(false)
   const [bulkEditOverlapHandling, setBulkEditOverlapHandling] = useState<string>("add_stream")
+  const [bulkEditSoccerModeEnabled, setBulkEditSoccerModeEnabled] = useState(false)
+  const [bulkEditSoccerMode, setBulkEditSoccerMode] = useState<'all' | 'teams' | 'manual' | 'clear'>('all')
+  const [bulkEditSoccerTeams, setBulkEditSoccerTeams] = useState<Array<{ provider: string; team_id: string; name: string }>>([])
+  const [bulkEditTeamSearch, setBulkEditTeamSearch] = useState('')
 
   // Template assignment modal for bulk/single selection
   const [showTemplateAssignment, setShowTemplateAssignment] = useState(false)
   const [templateAssignmentGroupId, setTemplateAssignmentGroupId] = useState<number | undefined>(undefined)
+  const [templateAssignmentBulkIds, setTemplateAssignmentBulkIds] = useState<number[] | undefined>(undefined)
 
   // Column sorting state
   type SortColumn = "name" | "sport" | "template" | "matched" | "status" | null
@@ -256,8 +350,8 @@ export function EventGroups() {
       }
       if (templateFilter !== "") {
         if (templateFilter === 0) {
-          // "Unassigned" - match groups with null template_id
-          if (group.template_id !== null) return false
+          // "Unassigned" - match groups with no template_id AND no group_templates
+          if (group.template_id !== null || group.group_template_count > 0) return false
         } else {
           if (group.template_id !== templateFilter) return false
         }
@@ -589,6 +683,10 @@ export function EventGroups() {
     setBulkEditSortOrder("time")
     setBulkEditOverlapHandlingEnabled(false)
     setBulkEditOverlapHandling("add_stream")
+    setBulkEditSoccerModeEnabled(false)
+    setBulkEditSoccerMode('all')
+    setBulkEditSoccerTeams([])
+    setBulkEditTeamSearch('')
   }
 
   const handleBulkEdit = async () => {
@@ -611,6 +709,10 @@ export function EventGroups() {
       clear_channel_profile_ids?: boolean
       clear_stream_profile_id?: boolean
       clear_stream_timezone?: boolean
+      soccer_mode?: string | null
+      soccer_followed_teams?: Array<{ provider: string; team_id: string; name: string }>
+      clear_soccer_mode?: boolean
+      clear_soccer_followed_teams?: boolean
     } = { group_ids: ids }
 
     if (bulkEditLeaguesEnabled && bulkEditLeagues.length > 0) {
@@ -665,6 +767,20 @@ export function EventGroups() {
     }
     if (bulkEditOverlapHandlingEnabled) {
       request.overlap_handling = bulkEditOverlapHandling
+    }
+    if (bulkEditSoccerModeEnabled) {
+      if (bulkEditSoccerMode === 'clear') {
+        request.clear_soccer_mode = true
+        request.clear_soccer_followed_teams = true
+      } else {
+        request.soccer_mode = bulkEditSoccerMode
+        if (bulkEditSoccerMode === 'teams' && bulkEditSoccerTeams.length > 0) {
+          request.soccer_followed_teams = bulkEditSoccerTeams
+        } else if (bulkEditSoccerMode !== 'teams') {
+          // Clear teams when switching away from teams mode
+          request.clear_soccer_followed_teams = true
+        }
+      }
     }
 
     try {
@@ -944,12 +1060,19 @@ export function EventGroups() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    // For single selection, open template assignment for that group
-                    // For multi-selection, open for first group (assignments will apply to pattern)
-                    const firstGroupId = Array.from(selectedIds)[0]
-                    const firstGroup = data?.groups?.find(g => g.id === firstGroupId)
-                    if (firstGroup && firstGroup.group_mode === 'multi') {
-                      setTemplateAssignmentGroupId(firstGroupId)
+                    const ids = Array.from(selectedIds)
+                    if (ids.length === 1) {
+                      // Single group — open in database mode
+                      const group = data?.groups?.find(g => g.id === ids[0])
+                      if (group && group.group_mode === 'multi') {
+                        setTemplateAssignmentBulkIds(undefined)
+                        setTemplateAssignmentGroupId(ids[0])
+                        setShowTemplateAssignment(true)
+                      }
+                    } else if (ids.length > 1) {
+                      // Multiple groups — open in bulk mode
+                      setTemplateAssignmentGroupId(undefined)
+                      setTemplateAssignmentBulkIds(ids)
                       setShowTemplateAssignment(true)
                     }
                   }}
@@ -1358,6 +1481,10 @@ export function EventGroups() {
                         >
                           ↳
                         </Badge>
+                      ) : group.group_template_count > 0 ? (
+                        <Badge variant="success" title="Templates assigned via Manage Templates">
+                          Managed ({group.group_template_count})
+                        </Badge>
                       ) : group.template_id ? (
                         <Badge variant="success">
                           {templates?.find((t) => t.id === group.template_id)?.name ?? `#${group.template_id}`}
@@ -1401,6 +1528,14 @@ export function EventGroups() {
                           title="Inherited from parent"
                         >
                           ↳
+                        </Badge>
+                      ) : group.channel_group_mode && group.channel_group_mode !== "static" ? (
+                        <Badge
+                          variant="outline"
+                          className="bg-blue-500/15 text-blue-400 border-blue-500/30 text-xs font-mono"
+                          title="Dynamic channel group"
+                        >
+                          {group.channel_group_mode}
                         </Badge>
                       ) : group.channel_group_id ? (
                         <Badge variant="secondary" className="text-xs" title={`ID: ${group.channel_group_id}`}>
@@ -1697,7 +1832,7 @@ export function EventGroups() {
                   selectedLeagues={bulkEditLeagues}
                   onSelectionChange={setBulkEditLeagues}
                   maxHeight="max-h-48"
-                  maxBadges={5}
+                  maxBadges={10}
                 />
               )}
             </div>
@@ -1705,19 +1840,19 @@ export function EventGroups() {
             {/* Template */}
             <div className="space-y-2">
               {allMultiMode ? (
-                // Multi-league groups: use template assignments
+                // Multi-league groups: use bulk template assignments
                 <>
                   <span className="text-sm font-medium">Template Assignments</span>
                   <p className="text-xs text-muted-foreground">
-                    Multi-league groups use template assignments for sport/league-specific templates.
+                    Configure template assignments to apply to all {selectedIds.size} selected groups.
                   </p>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      // Open template assignment modal for first selected group
-                      const firstGroupId = Array.from(selectedIds)[0]
-                      setTemplateAssignmentGroupId(firstGroupId)
+                      // Open template assignment modal in bulk mode
+                      setTemplateAssignmentBulkIds(Array.from(selectedIds))
+                      setTemplateAssignmentGroupId(undefined)
                       setShowTemplateAssignment(true)
                     }}
                   >
@@ -2048,6 +2183,57 @@ export function EventGroups() {
                 </Select>
               )}
             </div>
+
+            {/* Soccer Mode (multi-league only) */}
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={bulkEditSoccerModeEnabled}
+                  onCheckedChange={(checked) => {
+                    setBulkEditSoccerModeEnabled(!!checked)
+                    if (!checked) {
+                      setBulkEditSoccerTeams([])
+                      setBulkEditTeamSearch('')
+                    }
+                  }}
+                />
+                <span className="text-sm font-medium">Soccer Mode</span>
+                <span className="text-xs text-muted-foreground">(multi-league groups)</span>
+              </label>
+              {bulkEditSoccerModeEnabled && (
+                <div className="space-y-3 ml-6">
+                  <Select
+                    value={bulkEditSoccerMode}
+                    onChange={(e) => {
+                      setBulkEditSoccerMode(e.target.value as 'all' | 'teams' | 'manual' | 'clear')
+                      if (e.target.value !== 'teams') {
+                        setBulkEditSoccerTeams([])
+                        setBulkEditTeamSearch('')
+                      }
+                    }}
+                  >
+                    <option value="all">All Soccer Leagues (auto-include new leagues)</option>
+                    <option value="teams">Follow Teams (auto-discover leagues)</option>
+                    <option value="manual">Manual Selection (use league picker)</option>
+                    <option value="clear">Clear (disable soccer mode)</option>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {bulkEditSoccerMode === 'all' && "Groups will automatically include all enabled soccer leagues."}
+                    {bulkEditSoccerMode === 'teams' && "Groups will auto-discover leagues for followed teams."}
+                    {bulkEditSoccerMode === 'manual' && "Use the Leagues selector above to choose specific soccer leagues."}
+                    {bulkEditSoccerMode === 'clear' && "Removes soccer mode - groups will use their explicit league list."}
+                  </p>
+                  {bulkEditSoccerMode === 'teams' && (
+                    <BulkTeamSearch
+                      selectedTeams={bulkEditSoccerTeams}
+                      onTeamsChange={setBulkEditSoccerTeams}
+                      searchQuery={bulkEditTeamSearch}
+                      onSearchChange={setBulkEditTeamSearch}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowBulkEdit(false)}>
@@ -2055,7 +2241,7 @@ export function EventGroups() {
             </Button>
             <Button
               onClick={handleBulkEdit}
-              disabled={bulkUpdateMutation.isPending || (!bulkEditLeaguesEnabled && !bulkEditTemplateEnabled && !bulkEditChannelGroupEnabled && !bulkEditProfilesEnabled && !bulkEditStreamProfileEnabled && !bulkEditStreamTimezoneEnabled && !bulkEditSortOrderEnabled && !bulkEditOverlapHandlingEnabled)}
+              disabled={bulkUpdateMutation.isPending || (!bulkEditLeaguesEnabled && !bulkEditTemplateEnabled && !bulkEditChannelGroupEnabled && !bulkEditProfilesEnabled && !bulkEditStreamProfileEnabled && !bulkEditStreamTimezoneEnabled && !bulkEditSortOrderEnabled && !bulkEditOverlapHandlingEnabled && !bulkEditSoccerModeEnabled)}
             >
               {bulkUpdateMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Apply to {selectedIds.size} groups
@@ -2217,16 +2403,37 @@ export function EventGroups() {
       </Dialog>
 
       {/* Template Assignment Modal for bulk/single selection */}
-      {templateAssignmentGroupId && (
+      {(templateAssignmentGroupId || templateAssignmentBulkIds) && (
         <TemplateAssignmentModal
           open={showTemplateAssignment}
           onOpenChange={(open) => {
             setShowTemplateAssignment(open)
-            if (!open) setTemplateAssignmentGroupId(undefined)
+            if (!open) {
+              setTemplateAssignmentGroupId(undefined)
+              setTemplateAssignmentBulkIds(undefined)
+            }
           }}
           groupId={templateAssignmentGroupId}
-          groupName={data?.groups?.find(g => g.id === templateAssignmentGroupId)?.name || "Selected Group"}
-          groupLeagues={data?.groups?.find(g => g.id === templateAssignmentGroupId)?.leagues || []}
+          bulkGroupIds={templateAssignmentBulkIds}
+          groupName={
+            templateAssignmentBulkIds
+              ? `${templateAssignmentBulkIds.length} Groups`
+              : data?.groups?.find(g => g.id === templateAssignmentGroupId)?.name || "Selected Group"
+          }
+          groupLeagues={
+            templateAssignmentBulkIds
+              ? // Combine leagues from all selected groups (deduplicated)
+                [...new Set(
+                  data?.groups
+                    ?.filter(g => templateAssignmentBulkIds.includes(g.id))
+                    .flatMap(g => g.leagues) || []
+                )]
+              : data?.groups?.find(g => g.id === templateAssignmentGroupId)?.leagues || []
+          }
+          onBulkComplete={() => {
+            setShowBulkEdit(false)
+            setSelectedIds(new Set())
+          }}
         />
       )}
     </div>

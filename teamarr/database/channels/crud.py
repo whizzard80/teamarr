@@ -293,6 +293,13 @@ def get_all_managed_channels(
     return [ManagedChannel.from_row(dict(row)) for row in cursor.fetchall()]
 
 
+def count_active_managed_channels(conn: Connection) -> int:
+    """Count managed channels that are not deleted."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM managed_channels WHERE deleted_at IS NULL"
+    ).fetchone()[0]
+
+
 def update_managed_channel(conn: Connection, channel_id: int, data: dict) -> bool:
     """Update managed channel fields.
 
@@ -351,6 +358,36 @@ def mark_channel_deleted(
         logger.info("[DELETED] Managed channel id=%d reason=%s", channel_id, reason)
         return True
     return False
+
+
+def mark_all_channels_deleted(conn: Connection) -> tuple[int, int]:
+    """Mark all active managed channels as deleted (soft delete).
+
+    Used by channel reset operations.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        Tuple of (count_before, rows_updated)
+    """
+    cursor = conn.execute("SELECT COUNT(*) FROM managed_channels WHERE deleted_at IS NULL")
+    count_before = cursor.fetchone()[0]
+
+    cursor = conn.execute(
+        """UPDATE managed_channels
+           SET deleted_at = CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL"""
+    )
+    rows_updated = cursor.rowcount
+    conn.commit()
+
+    logger.info(
+        "Reset: marked %d managed_channels as deleted (had %d active records before)",
+        rows_updated,
+        count_before,
+    )
+    return count_before, rows_updated
 
 
 def find_existing_channel(

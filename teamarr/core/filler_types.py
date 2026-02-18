@@ -32,6 +32,10 @@ class ConditionalFillerTemplate:
     """Conditional templates based on game status."""
 
     enabled: bool = False
+    title_final: str | None = None  # When last game is final
+    title_not_final: str | None = None  # When last game in progress
+    subtitle_final: str | None = None  # When last game is final
+    subtitle_not_final: str | None = None  # When last game in progress
     description_final: str | None = None  # When last game is final
     description_not_final: str | None = None  # When last game in progress
 

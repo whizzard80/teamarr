@@ -98,9 +98,17 @@ class FillerFallback(BaseModel):
 
 
 class ConditionalContent(BaseModel):
-    """Conditional description settings."""
+    """Conditional content settings based on game status (final/not final).
+
+    Used for postgame and idle filler to show different content based on
+    whether the relevant game (last game for postgame/idle) is final.
+    """
 
     enabled: bool = False
+    title_final: str | None = None
+    title_not_final: str | None = None
+    subtitle_final: str | None = None
+    subtitle_not_final: str | None = None
     description_final: str | None = None
     description_not_final: str | None = None
 
@@ -305,29 +313,6 @@ class EventEPGRequest(BaseModel):
     channel_prefix: str = "event"
     pregame_minutes: int = 0
     duration_hours: float = 3.0
-
-
-class EventMatchRequest(BaseModel):
-    """Request body for event matching."""
-
-    league: str
-    target_date: str | None = None  # YYYY-MM-DD
-    team1_id: str | None = None
-    team2_id: str | None = None
-    team1_name: str | None = None
-    team2_name: str | None = None
-
-
-class EventMatchResponse(BaseModel):
-    """Response body for event matching."""
-
-    found: bool
-    event_id: str | None = None
-    event_name: str | None = None
-    home_team: str | None = None
-    away_team: str | None = None
-    start_time: str | None = None
-    venue: str | None = None
 
 
 # =============================================================================

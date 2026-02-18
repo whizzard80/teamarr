@@ -9,6 +9,13 @@ Layer hierarchy:
 
 # Core services
 # Service facades (hide consumer layer from API)
+from teamarr.services.backup_service import (
+    BackupInfo,
+    BackupResult,
+    BackupService,
+    RotationResult,
+    create_backup_service,
+)
 from teamarr.services.cache_service import (
     CacheService,
     CacheStats,
@@ -48,11 +55,6 @@ from teamarr.services.league_mappings import (
     get_league_mapping_service,
     init_league_mapping_service,
 )
-from teamarr.services.matching_service import (
-    MatchingService,
-    MatchResult,
-    create_matching_service,
-)
 from teamarr.services.scheduler_service import (
     SchedulerRunResult,
     SchedulerService,
@@ -80,10 +82,6 @@ __all__ = [
     "TeamChannelConfig",
     "TeamEPGOptions",
     "create_epg_service",
-    # Matching service
-    "MatchingService",
-    "MatchResult",
-    "create_matching_service",
     # Channel service
     "ChannelService",
     "DeletionResult",
@@ -117,4 +115,10 @@ __all__ = [
     "get_stream_ordering_service",
     # Detection keyword service
     "DetectionKeywordService",
+    # Backup service
+    "BackupInfo",
+    "BackupResult",
+    "BackupService",
+    "RotationResult",
+    "create_backup_service",
 ]

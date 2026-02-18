@@ -19,6 +19,8 @@ import {
   updateReconciliationSettings,
   getDisplaySettings,
   updateDisplaySettings,
+  getStreamFilterSettings,
+  updateStreamFilterSettings,
   getTeamFilterSettings,
   updateTeamFilterSettings,
   getExceptionKeywords,
@@ -32,6 +34,8 @@ import {
   getUpdateCheckSettings,
   updateUpdateCheckSettings,
   checkForUpdates,
+  getGoldZoneSettings,
+  updateGoldZoneSettings,
 } from "@/api/settings"
 import type {
   DispatcharrSettings,
@@ -41,10 +45,12 @@ import type {
   DurationSettings,
   ReconciliationSettings,
   DisplaySettings,
+  StreamFilterSettingsUpdate,
   TeamFilterSettingsUpdate,
   ChannelNumberingSettingsUpdate,
   StreamOrderingSettingsUpdate,
   UpdateCheckSettingsUpdate,
+  GoldZoneSettingsUpdate,
 } from "@/api/settings"
 
 export function useSettings() {
@@ -215,6 +221,25 @@ export function useUpdateDisplaySettings() {
   })
 }
 
+export function useStreamFilterSettings() {
+  return useQuery({
+    queryKey: ["settings", "stream-filter"],
+    queryFn: getStreamFilterSettings,
+  })
+}
+
+export function useUpdateStreamFilterSettings() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (data: StreamFilterSettingsUpdate) => updateStreamFilterSettings(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["settings"] })
+      queryClient.invalidateQueries({ queryKey: ["settings", "stream-filter"] })
+    },
+  })
+}
+
 export function useTeamFilterSettings() {
   return useQuery({
     queryKey: ["settings", "team-filter"],
@@ -350,6 +375,24 @@ export function useForceCheckForUpdates() {
     mutationFn: () => checkForUpdates(true),
     onSuccess: (data) => {
       queryClient.setQueryData(["updates", "check"], data)
+    },
+  })
+}
+
+export function useGoldZoneSettings() {
+  return useQuery({
+    queryKey: ["settings", "gold-zone"],
+    queryFn: getGoldZoneSettings,
+  })
+}
+
+export function useUpdateGoldZoneSettings() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (data: GoldZoneSettingsUpdate) => updateGoldZoneSettings(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["settings"] })
     },
   })
 }

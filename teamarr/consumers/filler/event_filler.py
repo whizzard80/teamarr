@@ -117,6 +117,7 @@ class EventFillerGenerator:
         channel_id: str,
         config: EventFillerConfig | None = None,
         options: EventFillerOptions | None = None,
+        card_segment: str | None = None,
     ) -> list[Programme]:
         """Generate pregame and postgame filler for an event.
 
@@ -125,6 +126,7 @@ class EventFillerGenerator:
             channel_id: XMLTV channel ID
             config: Filler template configuration
             options: Generation options
+            card_segment: UFC card segment code (e.g., "prelims", "main_card")
 
         Returns:
             List of filler Programme entries
@@ -150,7 +152,7 @@ class EventFillerGenerator:
         epg_end = options.epg_end or (event_end + timedelta(hours=options.postgame_buffer_hours))
 
         # Build context once - event filler uses single context, no suffixes
-        context = self._build_event_context(event)
+        context = self._build_event_context(event, card_segment=card_segment)
 
         # Generate pregame filler
         if config.pregame_enabled and epg_start < event_start:
@@ -205,6 +207,7 @@ class EventFillerGenerator:
         channel_id: str,
         config: EventFillerConfig | None = None,
         options: EventFillerOptions | None = None,
+        card_segment: str | None = None,
     ) -> EventFillerResult:
         """Generate filler with separate pregame/postgame counts.
 
@@ -231,7 +234,7 @@ class EventFillerGenerator:
         epg_end = options.epg_end or (event_end + timedelta(hours=options.postgame_buffer_hours))
 
         # Build context once
-        context = self._build_event_context(event)
+        context = self._build_event_context(event, card_segment=card_segment)
 
         # Generate pregame filler
         if config.pregame_enabled and epg_start < event_start:
@@ -348,7 +351,9 @@ class EventFillerGenerator:
 
         return programmes
 
-    def _build_event_context(self, event: Event) -> TemplateContext:
+    def _build_event_context(
+        self, event: Event, card_segment: str | None = None
+    ) -> TemplateContext:
         """Build template context for event filler.
 
         Event filler uses positional variables (home_team, away_team)
@@ -387,6 +392,7 @@ class EventFillerGenerator:
             opponent=event.away_team,
             opponent_stats=away_stats,
             odds=odds,
+            card_segment=card_segment,
         )
 
         return TemplateContext(

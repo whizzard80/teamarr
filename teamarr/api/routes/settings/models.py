@@ -223,6 +223,7 @@ class TeamFilterSettingsModel(BaseModel):
     include_teams: list[dict] | None = None
     exclude_teams: list[dict] | None = None
     mode: str = "include"
+    bypass_filter_for_playoffs: bool = False  # Include all playoff games
 
 
 class TeamFilterSettingsUpdate(BaseModel):
@@ -234,6 +235,28 @@ class TeamFilterSettingsUpdate(BaseModel):
     mode: str | None = None
     clear_include_teams: bool = False
     clear_exclude_teams: bool = False
+    bypass_filter_for_playoffs: bool | None = None
+
+
+# =============================================================================
+# STREAM FILTER SETTINGS
+# =============================================================================
+
+
+class StreamFilterSettingsModel(BaseModel):
+    """Global stream filtering settings."""
+
+    require_event_pattern: bool = True
+    include_patterns: list[str] = Field(default_factory=list)
+    exclude_patterns: list[str] = Field(default_factory=list)
+
+
+class StreamFilterSettingsUpdate(BaseModel):
+    """Update model for stream filter settings."""
+
+    require_event_pattern: bool | None = None
+    include_patterns: list[str] | None = None
+    exclude_patterns: list[str] | None = None
 
 
 # =============================================================================
@@ -330,6 +353,31 @@ class UpdateInfoModel(BaseModel):
 
 
 # =============================================================================
+# GOLD ZONE SETTINGS (Olympics Special Feature)
+# =============================================================================
+
+
+class GoldZoneSettingsModel(BaseModel):
+    """Gold Zone settings for Olympics coverage."""
+
+    enabled: bool = False
+    channel_number: int | None = None
+    channel_group_id: int | None = None
+    channel_profile_ids: list[int | str] | None = None
+    stream_profile_id: int | None = None
+
+
+class GoldZoneSettingsUpdate(BaseModel):
+    """Update model for Gold Zone settings."""
+
+    enabled: bool | None = None
+    channel_number: int | None = None
+    channel_group_id: int | None = None
+    channel_profile_ids: list[int | str] | None = None
+    stream_profile_id: int | None = None
+
+
+# =============================================================================
 # ALL SETTINGS
 # =============================================================================
 
@@ -344,10 +392,12 @@ class AllSettingsModel(BaseModel):
     epg: EPGSettingsModel
     durations: DurationSettingsModel
     display: DisplaySettingsModel
+    stream_filter: StreamFilterSettingsModel | None = None
     team_filter: TeamFilterSettingsModel | None = None
     channel_numbering: ChannelNumberingSettingsModel | None = None
     stream_ordering: StreamOrderingSettingsModel | None = None
     update_check: UpdateCheckSettingsModel | None = None
+    gold_zone: GoldZoneSettingsModel | None = None
     epg_generation_counter: int = 0
     schema_version: int = 44
 

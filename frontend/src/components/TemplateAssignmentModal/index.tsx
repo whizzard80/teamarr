@@ -19,17 +19,20 @@ import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { SearchableMultiSelect } from "@/components/ui/searchable-multiselect"
+import { CheckboxListPicker } from "@/components/ui/checkbox-list-picker"
+import type { CheckboxListGroup } from "@/components/ui/checkbox-list-picker"
 import {
   getGroupTemplates,
   addGroupTemplate,
   updateGroupTemplate,
   deleteGroupTemplate,
+  bulkSetGroupTemplates,
 } from "@/api/groups"
-import type { GroupTemplate } from "@/api/groups"
+import type { GroupTemplate, BulkTemplateAssignment } from "@/api/groups"
 import { useTemplates } from "@/hooks/useTemplates"
 import { useSports } from "@/hooks/useSports"
 import { getLeagues } from "@/api/teams"
+import { getSportDisplayName } from "@/lib/utils"
 import { Loader2, Plus, Pencil, Trash2, Layers } from "lucide-react"
 
 // ---------------------------------------------------------------------------
@@ -53,6 +56,9 @@ interface TemplateAssignmentModalProps {
   // Local mode props (for new groups before saving)
   localAssignments?: LocalTemplateAssignment[]
   onLocalChange?: (assignments: LocalTemplateAssignment[]) => void
+  // Bulk mode props (for applying to multiple groups)
+  bulkGroupIds?: number[] // If provided, enables bulk mode
+  onBulkComplete?: () => void // Called after bulk apply succeeds
 }
 
 interface EditingAssignment {
@@ -74,16 +80,25 @@ export function TemplateAssignmentModal({
   groupLeagues,
   localAssignments,
   onLocalChange,
+  bulkGroupIds,
+  onBulkComplete,
 }: TemplateAssignmentModalProps) {
   const queryClient = useQueryClient()
 
-  // Determine if we're in local mode (no groupId, managing assignments locally)
-  const isLocalMode = !groupId
+  // Determine mode:
+  // - bulk mode: bulkGroupIds provided (applying to multiple groups)
+  // - local mode: no groupId (new group, not saved yet)
+  // - database mode: groupId provided (editing single existing group)
+  const isBulkMode = bulkGroupIds && bulkGroupIds.length > 0
+  const isLocalMode = !groupId && !isBulkMode
+
+  // Bulk mode uses local state for assignments (starts empty)
+  const [bulkAssignments, setBulkAssignments] = useState<LocalTemplateAssignment[]>([])
 
   // Form state for add/edit
   const [editing, setEditing] = useState<EditingAssignment | null>(null)
 
-  // Fetch current assignments (only when not in local mode)
+  // Fetch current assignments (only in database mode - single group editing)
   const {
     data: dbAssignments,
     isLoading,
@@ -91,11 +106,20 @@ export function TemplateAssignmentModal({
   } = useQuery({
     queryKey: ["groupTemplates", groupId],
     queryFn: () => getGroupTemplates(groupId!),
-    enabled: open && !isLocalMode,
+    enabled: open && !isLocalMode && !isBulkMode,
   })
 
-  // Use local assignments in local mode, otherwise use DB assignments
-  const assignments = isLocalMode
+  // Determine which assignments to show based on mode
+  const assignments = isBulkMode
+    ? bulkAssignments.map((a, idx) => ({
+        id: idx + 1, // Temporary ID for bulk assignments
+        group_id: 0,
+        template_id: a.template_id,
+        sports: a.sports,
+        leagues: a.leagues,
+        template_name: a.template_name ?? null,
+      }))
+    : isLocalMode
     ? localAssignments?.map((a, idx) => ({
         id: idx + 1, // Temporary ID for local assignments
         group_id: 0,
@@ -122,23 +146,44 @@ export function TemplateAssignmentModal({
   })
   const allLeagues = leaguesData?.leagues || []
 
-  // Get unique sports from group's leagues
-  const groupSports = [...new Set(
-    allLeagues
-      .filter((l) => groupLeagues.includes(l.slug))
-      .map((l) => l.sport)
-  )]
+  // Get unique sports from group's leagues (sorted)
+  const groupSports = useMemo(() =>
+    [...new Set(
+      allLeagues
+        .filter((l) => groupLeagues.includes(l.slug))
+        .map((l) => l.sport)
+    )].sort(),
+    [allLeagues, groupLeagues]
+  )
 
-  // Build league options for searchable multiselect
-  const leagueOptions = useMemo(() => {
-    return groupLeagues.map((slug) => {
+  // Build sport items for CheckboxListPicker (flat mode)
+  const sportItems = useMemo(() =>
+    groupSports.map((sport) => ({
+      value: sport,
+      label: getSportDisplayName(sport, sportsMap),
+    })),
+    [groupSports, sportsMap]
+  )
+
+  // Build league groups for CheckboxListPicker (grouped mode)
+  const leagueGroups: CheckboxListGroup[] = useMemo(() => {
+    const grouped: Record<string, { slug: string; name: string; sport: string }[]> = {}
+    for (const slug of groupLeagues) {
       const league = allLeagues.find((l) => l.slug === slug)
-      return {
-        value: slug,
-        label: league?.name || slug,
-      }
-    }).sort((a, b) => a.label.localeCompare(b.label))
-  }, [groupLeagues, allLeagues])
+      const sport = league?.sport || "other"
+      if (!grouped[sport]) grouped[sport] = []
+      grouped[sport].push({ slug, name: league?.name || slug, sport })
+    }
+    return Object.keys(grouped)
+      .sort()
+      .map((sport) => ({
+        key: sport,
+        label: getSportDisplayName(sport, sportsMap),
+        items: grouped[sport]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((l) => ({ value: l.slug, label: l.name })),
+      }))
+  }, [groupLeagues, allLeagues, sportsMap])
 
   // Mutations (only used when not in local mode)
   const addMutation = useMutation({
@@ -171,10 +216,29 @@ export function TemplateAssignmentModal({
     },
   })
 
-  // Reset editing state when modal closes
+  // Bulk mutation - apply assignments to all selected groups
+  const bulkMutation = useMutation({
+    mutationFn: (assignments: BulkTemplateAssignment[]) =>
+      bulkSetGroupTemplates({
+        group_ids: bulkGroupIds!,
+        assignments,
+      }),
+    onSuccess: () => {
+      // Invalidate all affected groups
+      bulkGroupIds?.forEach((id) => {
+        queryClient.invalidateQueries({ queryKey: ["groupTemplates", id] })
+      })
+      queryClient.invalidateQueries({ queryKey: ["groups"] })
+      onBulkComplete?.()
+      onOpenChange(false)
+    },
+  })
+
+  // Reset state when modal closes
   useEffect(() => {
     if (!open) {
       setEditing(null)
+      setBulkAssignments([])
     }
   }, [open])
 
@@ -198,7 +262,10 @@ export function TemplateAssignmentModal({
   const handleDelete = useCallback(
     (assignmentId: number) => {
       if (confirm("Delete this template assignment?")) {
-        if (isLocalMode && onLocalChange && localAssignments) {
+        if (isBulkMode) {
+          // In bulk mode, remove from bulk state (assignmentId is index + 1)
+          setBulkAssignments((prev) => prev.filter((_, idx) => idx + 1 !== assignmentId))
+        } else if (isLocalMode && onLocalChange && localAssignments) {
           // In local mode, remove from local state (assignmentId is index + 1)
           const newAssignments = localAssignments.filter((_, idx) => idx + 1 !== assignmentId)
           onLocalChange(newAssignments)
@@ -207,7 +274,7 @@ export function TemplateAssignmentModal({
         }
       }
     },
-    [deleteMutation, isLocalMode, onLocalChange, localAssignments]
+    [deleteMutation, isBulkMode, isLocalMode, onLocalChange, localAssignments]
   )
 
   const handleSave = useCallback(() => {
@@ -215,15 +282,29 @@ export function TemplateAssignmentModal({
 
     const templateName = eventTemplates.find((t) => t.id === editing.template_id)?.name
 
-    if (isLocalMode && onLocalChange) {
-      // In local mode, update local state
-      const newAssignment: LocalTemplateAssignment = {
-        template_id: editing.template_id,
-        sports: editing.sports.length > 0 ? editing.sports : null,
-        leagues: editing.leagues.length > 0 ? editing.leagues : null,
-        template_name: templateName,
-      }
+    const newAssignment: LocalTemplateAssignment = {
+      template_id: editing.template_id,
+      sports: editing.sports.length > 0 ? editing.sports : null,
+      leagues: editing.leagues.length > 0 ? editing.leagues : null,
+      template_name: templateName,
+    }
 
+    if (isBulkMode) {
+      // In bulk mode, update bulk state
+      if (editing.id) {
+        // Edit existing (editing.id is index + 1)
+        setBulkAssignments((prev) => {
+          const updated = [...prev]
+          updated[editing.id! - 1] = newAssignment
+          return updated
+        })
+      } else {
+        // Add new
+        setBulkAssignments((prev) => [...prev, newAssignment])
+      }
+      setEditing(null)
+    } else if (isLocalMode && onLocalChange) {
+      // In local mode, update local state
       if (editing.id && localAssignments) {
         // Edit existing (editing.id is index + 1)
         const newAssignments = [...localAssignments]
@@ -248,23 +329,32 @@ export function TemplateAssignmentModal({
         addMutation.mutate(data)
       }
     }
-  }, [editing, addMutation, updateMutation, isLocalMode, onLocalChange, localAssignments, eventTemplates])
+  }, [editing, addMutation, updateMutation, isBulkMode, isLocalMode, onLocalChange, localAssignments, eventTemplates])
 
   const handleCancel = useCallback(() => {
     setEditing(null)
   }, [])
 
-  const toggleSport = useCallback((sport: string) => {
-    setEditing((prev) =>
-      prev
-        ? {
-            ...prev,
-            sports: prev.sports.includes(sport)
-              ? prev.sports.filter((s) => s !== sport)
-              : [...prev.sports, sport],
-          }
-        : null
-    )
+  // Apply bulk assignments to all selected groups
+  const handleBulkApply = useCallback(() => {
+    if (!isBulkMode || bulkAssignments.length === 0) return
+
+    const assignments: BulkTemplateAssignment[] = bulkAssignments.map((a) => ({
+      template_id: a.template_id,
+      sports: a.sports,
+      leagues: a.leagues,
+    }))
+
+    bulkMutation.mutate(assignments)
+  }, [isBulkMode, bulkAssignments, bulkMutation])
+
+  // --- Selection change handlers for CheckboxListPicker ---
+  const handleSportsChange = useCallback((sports: string[]) => {
+    setEditing((prev) => prev ? { ...prev, sports } : null)
+  }, [])
+
+  const handleLeaguesChange = useCallback((leagues: string[]) => {
+    setEditing((prev) => prev ? { ...prev, leagues } : null)
   }, [])
 
 
@@ -284,14 +374,26 @@ export function TemplateAssignmentModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Layers className="h-4 w-4" />
-            Template Assignments
+            {isBulkMode
+              ? `Template Assignments (${bulkGroupIds?.length} groups)`
+              : "Template Assignments"}
           </DialogTitle>
           <DialogDescription>
-            Assign templates to {groupName} by sport or league. More specific matches take priority.
+            {isBulkMode
+              ? "Configure template assignments to apply to all selected groups. This will replace any existing assignments."
+              : `Assign templates to ${groupName} by sport or league. More specific matches take priority.`}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Bulk mode warning */}
+          {isBulkMode && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-sm text-amber-600 dark:text-amber-400">
+              <strong>Note:</strong> Applying these assignments will replace all existing template
+              assignments on the {bulkGroupIds?.length} selected groups.
+            </div>
+          )}
+
           {/* Current assignments */}
           {isLoading && (
             <div className="flex items-center justify-center py-8">
@@ -416,32 +518,26 @@ export function TemplateAssignmentModal({
                   {/* Sports filter */}
                   {groupSports.length > 1 && (
                     <div className="space-y-2">
-                      <Label>Sports (optional - leave empty for all)</Label>
-                      <div className="flex flex-wrap gap-2">
-                        {groupSports.map((sport) => (
-                          <Badge
-                            key={sport}
-                            variant={editing.sports.includes(sport) ? "default" : "outline"}
-                            className="cursor-pointer"
-                            onClick={() => toggleSport(sport)}
-                          >
-                            {sportsMap[sport] || sport}
-                          </Badge>
-                        ))}
-                      </div>
+                      <Label>Sports (optional — leave empty for all)</Label>
+                      <CheckboxListPicker
+                        selected={editing.sports}
+                        onChange={handleSportsChange}
+                        items={sportItems}
+                        searchPlaceholder="Search sports..."
+                        maxHeight="max-h-36"
+                      />
                     </div>
                   )}
 
                   {/* Leagues filter */}
                   <div className="space-y-2">
-                    <Label>Leagues (optional - leave empty for all)</Label>
-                    <SearchableMultiSelect
-                      value={editing.leagues}
-                      onChange={(leagues) => setEditing({ ...editing, leagues })}
-                      options={leagueOptions}
-                      placeholder="Select leagues..."
+                    <Label>Leagues (optional — leave empty for all)</Label>
+                    <CheckboxListPicker
+                      selected={editing.leagues}
+                      onChange={handleLeaguesChange}
+                      groups={leagueGroups}
                       searchPlaceholder="Search leagues..."
-                      maxDisplayed={5}
+                      maxHeight="max-h-48"
                     />
                   </div>
 
@@ -477,8 +573,17 @@ export function TemplateAssignmentModal({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Done
+            {isBulkMode ? "Cancel" : "Done"}
           </Button>
+          {isBulkMode && (
+            <Button
+              onClick={handleBulkApply}
+              disabled={bulkAssignments.length === 0 || bulkMutation.isPending}
+            >
+              {bulkMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Apply to {bulkGroupIds?.length} Groups
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

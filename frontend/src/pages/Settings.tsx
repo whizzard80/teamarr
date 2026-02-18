@@ -20,16 +20,17 @@ import {
   X,
   RefreshCw,
   ExternalLink,
+  Shield,
+  ShieldOff,
+  HardDrive,
 } from "lucide-react"
-import {
-  ChannelProfileSelector,
-  profileIdsToApi,
-  apiToProfileIds,
-} from "@/components/ChannelProfileSelector"
+import { ChannelProfileSelector } from "@/components/ChannelProfileSelector"
+import { profileIdsToApi, apiToProfileIds } from "@/lib/channel-profiles"
 import { StreamProfileSelector } from "@/components/StreamProfileSelector"
-import { useGenerationProgress } from "@/contexts/GenerationContext"
+import { useGenerationProgress } from "@/contexts/generation-context"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
@@ -59,14 +60,26 @@ import {
   useUpdateUpdateCheckSettings,
   useCheckForUpdates,
   useForceCheckForUpdates,
+  useGoldZoneSettings,
+  useUpdateGoldZoneSettings,
 } from "@/hooks/useSettings"
 import { TeamPicker } from "@/components/TeamPicker"
 import { SortPriorityManager } from "@/components/SortPriorityManager"
 import { StreamOrderingManager } from "@/components/StreamOrderingManager"
 import { getLeagues, getSports } from "@/api/teams"
-import { downloadBackup, restoreBackup } from "@/api/backup"
+import { restoreBackup, downloadSpecificBackup } from "@/api/backup"
+import {
+  useBackups,
+  useCreateBackup,
+  useDeleteBackup,
+  useProtectBackup,
+  useUnprotectBackup,
+  useRestoreFromBackup,
+  useBackupSettings,
+  useUpdateBackupSettings,
+} from "@/hooks/useBackup"
 import { useQuery } from "@tanstack/react-query"
-import { useCacheStatus, useRefreshCache, useGameDataCacheStats, useClearGameDataCache } from "@/hooks/useEPG"
+import { useCacheStatus, useRefreshCache, useGameDataCacheStats, useClearGameDataCache, useClearAllRuns } from "@/hooks/useEPG"
 import { useDateFormat } from "@/hooks/useDateFormat"
 import type {
   DispatcharrSettings,
@@ -121,7 +134,434 @@ function CronPreview({ expression }: { expression: string }) {
   )
 }
 
-type SettingsTab = "general" | "teams" | "events" | "channels" | "epg" | "integrations" | "advanced"
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const k = 1024
+  const sizes = ["B", "KB", "MB", "GB"]
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i]
+}
+
+function BackupRestoreCard() {
+  // Backup settings state
+  const { data: settings } = useBackupSettings()
+  const updateSettings = useUpdateBackupSettings()
+  const [localSettings, setLocalSettings] = useState({
+    enabled: false,
+    cron: "0 3 * * *",
+    max_count: 7,
+  })
+  const [hasChanges, setHasChanges] = useState(false)
+
+  // Backup files state
+  const { data: backupsData, isLoading: backupsLoading, refetch } = useBackups()
+  const createBackup = useCreateBackup()
+  const deleteBackupMutation = useDeleteBackup()
+  const protectBackupMutation = useProtectBackup()
+  const unprotectBackupMutation = useUnprotectBackup()
+  const restoreFromBackupMutation = useRestoreFromBackup()
+  const [deletingFile, setDeletingFile] = useState<string | null>(null)
+  const [restoringFile, setRestoringFile] = useState<string | null>(null)
+
+  // File upload restore state
+  const [isRestoring, setIsRestoring] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (settings) {
+      setLocalSettings({
+        enabled: settings.enabled,
+        cron: settings.cron,
+        max_count: settings.max_count,
+      })
+      setHasChanges(false)
+    }
+  }, [settings])
+
+  const handleSaveSettings = async () => {
+    try {
+      await updateSettings.mutateAsync(localSettings)
+      toast.success("Backup settings saved")
+      setHasChanges(false)
+    } catch {
+      toast.error("Failed to save backup settings")
+    }
+  }
+
+  const handleCreateBackup = async () => {
+    try {
+      const result = await createBackup.mutateAsync()
+      toast.success(`Backup created: ${result.filename}`)
+    } catch {
+      toast.error("Failed to create backup")
+    }
+  }
+
+  const handleDelete = async (filename: string) => {
+    if (!confirm(`Delete backup "${filename}"? This cannot be undone.`)) {
+      return
+    }
+    setDeletingFile(filename)
+    try {
+      await deleteBackupMutation.mutateAsync(filename)
+      toast.success("Backup deleted")
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to delete backup"
+      toast.error(message)
+    } finally {
+      setDeletingFile(null)
+    }
+  }
+
+  const handleToggleProtection = async (filename: string, isProtected: boolean) => {
+    try {
+      if (isProtected) {
+        await unprotectBackupMutation.mutateAsync(filename)
+        toast.success("Backup unprotected")
+      } else {
+        await protectBackupMutation.mutateAsync(filename)
+        toast.success("Backup protected")
+      }
+    } catch {
+      toast.error("Failed to update protection")
+    }
+  }
+
+  const handleRestoreFromFile = async (filename: string) => {
+    if (!confirm(`Restore from "${filename}"? This will replace ALL current data. A pre-restore backup will be created.`)) {
+      return
+    }
+    setRestoringFile(filename)
+    try {
+      const result = await restoreFromBackupMutation.mutateAsync(filename)
+      toast.success(result.message)
+      if (result.backup_path) {
+        toast.info(`Pre-restore backup saved at: ${result.backup_path}`)
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to restore backup"
+      toast.error(message)
+    } finally {
+      setRestoringFile(null)
+    }
+  }
+
+  const handleUploadRestore = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    if (!confirm("Restore from uploaded file? This will replace ALL current data. A pre-restore backup will be created.")) {
+      event.target.value = ""
+      return
+    }
+
+    setIsRestoring(true)
+    try {
+      const result = await restoreBackup(file)
+      toast.success(result.message)
+      if (result.backup_path) {
+        toast.info(`Pre-restore backup saved at: ${result.backup_path}`)
+      }
+      refetch()
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to restore backup"
+      toast.error(message)
+    } finally {
+      setIsRestoring(false)
+      event.target.value = ""
+    }
+  }
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr)
+    return date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  }
+
+  const presets = [
+    { label: "Daily 3 AM", cron: "0 3 * * *" },
+    { label: "Weekly (Sun)", cron: "0 3 * * 0" },
+    { label: "Monthly (1st)", cron: "0 3 1 * *" },
+  ]
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <HardDrive className="h-5 w-5" />
+              Backup & Restore
+            </CardTitle>
+            <CardDescription>
+              Manage database backups with scheduled automation and restore capabilities
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            onClick={handleCreateBackup}
+            disabled={createBackup.isPending}
+          >
+            {createBackup.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4 mr-2" />
+            )}
+            Create Backup
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Scheduled Backups Section */}
+        <div className="space-y-4">
+          <h4 className="text-sm font-medium border-b pb-2">Scheduled Backups</h4>
+
+          <div className="flex items-center gap-3">
+            <Switch
+              checked={localSettings.enabled}
+              onCheckedChange={(checked) => {
+                setLocalSettings(prev => ({ ...prev, enabled: checked }))
+                setHasChanges(true)
+              }}
+            />
+            <div>
+              <Label className="text-sm font-medium">Enable Scheduled Backups</Label>
+              <p className="text-xs text-muted-foreground">
+                Automatically create backups according to the schedule
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Schedule</Label>
+              <div className="flex gap-2 flex-wrap">
+                {presets.map((preset) => (
+                  <Button
+                    key={preset.cron}
+                    variant={localSettings.cron === preset.cron ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      setLocalSettings(prev => ({ ...prev, cron: preset.cron }))
+                      setHasChanges(true)
+                    }}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <Input
+                  value={localSettings.cron}
+                  onChange={(e) => {
+                    setLocalSettings(prev => ({ ...prev, cron: e.target.value }))
+                    setHasChanges(true)
+                  }}
+                  placeholder="0 3 * * *"
+                  className="font-mono text-sm"
+                />
+                <CronPreview expression={localSettings.cron} />
+              </div>
+
+              <div className="space-y-1">
+                <Select
+                  value={String(localSettings.max_count)}
+                  onChange={(e) => {
+                    setLocalSettings(prev => ({ ...prev, max_count: parseInt(e.target.value) }))
+                    setHasChanges(true)
+                  }}
+                >
+                  <option value="3">3 backups</option>
+                  <option value="5">5 backups</option>
+                  <option value="7">7 backups</option>
+                  <option value="14">14 backups</option>
+                  <option value="30">30 backups</option>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Max backups to keep (oldest deleted when exceeded)
+                </p>
+              </div>
+            </div>
+
+            <Button
+              onClick={handleSaveSettings}
+              disabled={!hasChanges || updateSettings.isPending}
+              size="sm"
+            >
+              {updateSettings.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4 mr-2" />
+              )}
+              Save Settings
+            </Button>
+          </div>
+        </div>
+
+        {/* Backup Files Section */}
+        <div className="space-y-4">
+          <h4 className="text-sm font-medium border-b pb-2">Backup Files</h4>
+
+          {backupsLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : !backupsData?.backups.length ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <HardDrive className="h-12 w-12 mx-auto mb-2 opacity-20" />
+              <p>No backup files found</p>
+              <p className="text-xs">Create a backup to get started</p>
+            </div>
+          ) : (
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium">Filename</th>
+                    <th className="text-left px-4 py-2 font-medium">Size</th>
+                    <th className="text-left px-4 py-2 font-medium">Created</th>
+                    <th className="text-left px-4 py-2 font-medium">Type</th>
+                    <th className="text-right px-4 py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {backupsData.backups.map((backup) => (
+                    <tr key={backup.filename} className="hover:bg-muted/30">
+                      <td className="px-4 py-2 font-mono text-xs">
+                        <div className="flex items-center gap-2">
+                          {backup.is_protected && (
+                            <span title="Protected">
+                              <Shield className="h-4 w-4 text-amber-500" />
+                            </span>
+                          )}
+                          {backup.filename}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-muted-foreground">
+                        {formatBytes(backup.size_bytes)}
+                      </td>
+                      <td className="px-4 py-2 text-muted-foreground">
+                        {formatDate(backup.created_at)}
+                      </td>
+                      <td className="px-4 py-2">
+                        <Badge variant={backup.backup_type === "scheduled" ? "secondary" : "outline"}>
+                          {backup.backup_type}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => downloadSpecificBackup(backup.filename)}
+                            title="Download"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleRestoreFromFile(backup.filename)}
+                            disabled={restoringFile === backup.filename}
+                            title="Restore"
+                          >
+                            {restoringFile === backup.filename ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Upload className="h-4 w-4" />
+                            )}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleToggleProtection(backup.filename, backup.is_protected)}
+                            title={backup.is_protected ? "Unprotect" : "Protect"}
+                          >
+                            {backup.is_protected ? (
+                              <ShieldOff className="h-4 w-4" />
+                            ) : (
+                              <Shield className="h-4 w-4" />
+                            )}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(backup.filename)}
+                            disabled={deletingFile === backup.filename || backup.is_protected}
+                            title={backup.is_protected ? "Cannot delete protected backup" : "Delete"}
+                          >
+                            {deletingFile === backup.filename ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Restore from File Section */}
+        <div className="space-y-4">
+          <h4 className="text-sm font-medium border-b pb-2">Restore from File</h4>
+          <div className="flex items-center gap-4">
+            <div className="flex-1">
+              <p className="text-xs text-muted-foreground mb-2">
+                Upload a .db backup file to restore. A pre-restore backup will be created first.
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".db"
+                onChange={handleUploadRestore}
+                className="hidden"
+              />
+              <Button
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isRestoring}
+              >
+                {isRestoring ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4 mr-2" />
+                )}
+                {isRestoring ? "Restoring..." : "Upload & Restore"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Warning */}
+        <div className="rounded-md bg-amber-500/10 border border-amber-500/20 p-3">
+          <div className="flex gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-500">
+              <p className="font-medium">Important</p>
+              <p className="text-xs">
+                Restoring a backup will replace ALL current data. The application needs to be restarted for changes to take effect.
+                Protected backups (<Shield className="h-3 w-3 inline" />) are excluded from automatic rotation.
+              </p>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+type SettingsTab = "general" | "teams" | "events" | "channels" | "epg" | "integrations" | "advanced" | "special"
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
@@ -131,6 +571,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "channels", label: "Channels" },
   { id: "integrations", label: "Dispatcharr" },
   { id: "advanced", label: "System" },
+  { id: "special", label: "Special" },
 ]
 
 export function Settings() {
@@ -155,6 +596,7 @@ export function Settings() {
   const refreshCacheMutation = useRefreshCache()
   const { data: gameDataCacheStats } = useGameDataCacheStats()
   const clearGameDataCacheMutation = useClearGameDataCache()
+  const clearAllRunsMutation = useClearAllRuns()
   const { startGeneration, isGenerating } = useGenerationProgress()
 
   const updateDispatcharr = useUpdateDispatcharrSettings()
@@ -186,6 +628,59 @@ export function Settings() {
   const forceCheckUpdates = useForceCheckForUpdates()
   const { formatDateTime } = useDateFormat()
 
+  // Gold Zone settings
+  const { data: goldZoneData } = useGoldZoneSettings()
+  const updateGoldZone = useUpdateGoldZoneSettings()
+  const [goldZoneChannelDraft, setGoldZoneChannelDraft] = useState<string>("")
+  const [goldZoneProfileIds, setGoldZoneProfileIds] = useState<(number | string)[]>([])
+  const [goldZoneGroupDraft, setGoldZoneGroupDraft] = useState<string>("")
+  const [goldZoneStreamProfileDraft, setGoldZoneStreamProfileDraft] = useState<number | null>(null)
+  const channelGroupsQuery = useQuery({
+    queryKey: ["dispatcharr-channel-groups"],
+    queryFn: async () => {
+      const response = await fetch("/api/v1/dispatcharr/channel-groups?exclude_m3u=true")
+      if (!response.ok) return []
+      return response.json() as Promise<{ id: number; name: string }[]>
+    },
+    enabled: dispatcharrStatus.data?.connected ?? false,
+    retry: false,
+  })
+  useEffect(() => {
+    if (goldZoneData?.channel_number != null) {
+      setGoldZoneChannelDraft(String(goldZoneData.channel_number))
+    } else {
+      setGoldZoneChannelDraft("")
+    }
+  }, [goldZoneData?.channel_number])
+  useEffect(() => {
+    if (goldZoneData) {
+      setGoldZoneGroupDraft(goldZoneData.channel_group_id != null ? String(goldZoneData.channel_group_id) : "")
+      setGoldZoneStreamProfileDraft(goldZoneData.stream_profile_id ?? null)
+    }
+  }, [goldZoneData])
+  useEffect(() => {
+    if (channelProfilesQuery.data && goldZoneData) {
+      const allProfileIds = channelProfilesQuery.data.map(p => p.id)
+      setGoldZoneProfileIds(apiToProfileIds(goldZoneData.channel_profile_ids, allProfileIds))
+    }
+  }, [channelProfilesQuery.data, goldZoneData])
+
+  const handleSaveGoldZone = async () => {
+    try {
+      const allProfileIds = channelProfilesQuery.data?.map(p => p.id) ?? []
+      const apiIds = profileIdsToApi(goldZoneProfileIds, allProfileIds)
+      await updateGoldZone.mutateAsync({
+        channel_number: goldZoneChannelDraft ? parseInt(goldZoneChannelDraft) : null,
+        channel_group_id: goldZoneGroupDraft ? parseInt(goldZoneGroupDraft) : null,
+        channel_profile_ids: apiIds,
+        stream_profile_id: goldZoneStreamProfileDraft,
+      })
+      toast.success("Gold Zone settings saved")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save")
+    }
+  }
+
   const { data: leaguesData } = useQuery({
     queryKey: ["cache", "leagues"],
     queryFn: () => getLeagues(),
@@ -212,6 +707,7 @@ export function Settings() {
     include_teams: null,
     exclude_teams: null,
     mode: "include",
+    bypass_filter_for_playoffs: false,
   })
   const [channelNumbering, setChannelNumbering] = useState<ChannelNumberingSettings>({
     numbering_mode: "strict_block",
@@ -237,9 +733,6 @@ export function Settings() {
   // Selected profile IDs for display (converted from API format)
   const [selectedProfileIds, setSelectedProfileIds] = useState<(number | string)[]>([])
 
-  // Backup & Restore state
-  const [isRestoring, setIsRestoring] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const initializedRef = useRef(false)
 
   // Initialize local state from settings (only once on initial load)
@@ -488,38 +981,6 @@ export function Settings() {
       toast.success("Keyword updated")
     } catch (err) {
       toast.error("Failed to update keyword")
-    }
-  }
-
-  const handleDownloadBackup = () => {
-    downloadBackup()
-    toast.success("Backup download started")
-  }
-
-  const handleRestoreBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (!file.name.endsWith(".db")) {
-      toast.error("Invalid file type. Please upload a .db file.")
-      return
-    }
-
-    setIsRestoring(true)
-    try {
-      const result = await restoreBackup(file)
-      toast.success(result.message)
-      if (result.backup_path) {
-        toast.info(`Pre-restore backup saved at: ${result.backup_path}`)
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to restore backup")
-    } finally {
-      setIsRestoring(false)
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ""
-      }
     }
   }
 
@@ -1084,6 +1545,19 @@ export function Settings() {
             placeholder="Search teams to add to default filter..."
           />
 
+          {/* Playoff bypass option */}
+          <label className="flex items-center gap-2 cursor-pointer py-2">
+            <Checkbox
+              checked={teamFilter.bypass_filter_for_playoffs}
+              onCheckedChange={(checked) =>
+                setTeamFilter({ ...teamFilter, bypass_filter_for_playoffs: !!checked })
+              }
+            />
+            <span className="text-sm">
+              Include all playoff games (bypass team filter for postseason events)
+            </span>
+          </label>
+
           {/* Status message and Save button */}
           <div className="flex justify-between items-center">
             <div className="space-y-1">
@@ -1111,6 +1585,7 @@ export function Settings() {
                   mode: teamFilter.mode,
                   clear_include_teams: teamFilter.mode === "exclude" || !teamFilter.include_teams?.length,
                   clear_exclude_teams: teamFilter.mode === "include" || !teamFilter.exclude_teams?.length,
+                  bypass_filter_for_playoffs: teamFilter.bypass_filter_for_playoffs,
                 }, {
                   onSuccess: () => toast.success("Default team filter saved"),
                   onError: () => toast.error("Failed to save team filter"),
@@ -2223,60 +2698,7 @@ export function Settings() {
       </Card>
 
       {/* Backup & Restore */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Backup & Restore</CardTitle>
-          <CardDescription>Download a backup of your database or restore from a previous backup</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <Label className="text-sm font-medium">Download Backup</Label>
-              <p className="text-xs text-muted-foreground mb-2">
-                Download a copy of your current database including all teams, templates, groups, and settings.
-              </p>
-              <Button variant="outline" onClick={handleDownloadBackup}>
-                <Download className="h-4 w-4 mr-2" />
-                Download Backup
-              </Button>
-            </div>
-            <div className="flex-1">
-              <Label className="text-sm font-medium">Restore Backup</Label>
-              <p className="text-xs text-muted-foreground mb-2">
-                Upload a .db file to restore. A backup of your current data will be created first.
-              </p>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".db"
-                onChange={handleRestoreBackup}
-                className="hidden"
-              />
-              <Button
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isRestoring}
-              >
-                {isRestoring ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Upload className="h-4 w-4 mr-2" />
-                )}
-                {isRestoring ? "Restoring..." : "Restore Backup"}
-              </Button>
-            </div>
-          </div>
-          <div className="rounded-md bg-amber-500/10 border border-amber-500/20 p-3">
-            <div className="flex gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-              <div className="text-sm text-amber-500">
-                <p className="font-medium">Warning</p>
-                <p className="text-xs">Restoring a backup will replace ALL current data. The application will need to be restarted for changes to take effect.</p>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <BackupRestoreCard />
 
       {/* Data Caches */}
       <Card>
@@ -2295,7 +2717,7 @@ export function Settings() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-3 gap-6">
             {/* Team & League Directory Section */}
             <div className="space-y-4">
               <h4 className="text-sm font-medium">Team & League Directory</h4>
@@ -2356,15 +2778,6 @@ export function Settings() {
                 Schedules, scores, and odds
               </div>
 
-              <div className="rounded-md bg-amber-500/10 border border-amber-500/20 p-2">
-                <div className="flex gap-2">
-                  <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0 mt-0.5" />
-                  <p className="text-xs text-amber-500">
-                    Clear if scores appear incorrect
-                  </p>
-                </div>
-              </div>
-
               <Button
                 variant="destructive"
                 size="sm"
@@ -2383,6 +2796,39 @@ export function Settings() {
                   <Trash2 className="h-4 w-4 mr-2" />
                 )}
                 Clear Game Data Cache
+              </Button>
+            </div>
+
+            {/* Run History Cleanup Section */}
+            <div className="space-y-4">
+              <h4 className="text-sm font-medium">Run History</h4>
+              <div className="text-center">
+                <div className="text-xs text-muted-foreground">
+                  Processing run logs and statistics
+                </div>
+              </div>
+              <div className="text-center text-xs text-muted-foreground">
+                Auto-cleaned to 30 days after each run
+              </div>
+
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => {
+                  clearAllRunsMutation.mutate(undefined, {
+                    onSuccess: (data) => toast.success(data.message),
+                    onError: () => toast.error("Failed to clear run history"),
+                  })
+                }}
+                disabled={clearAllRunsMutation.isPending}
+                className="w-full"
+              >
+                {clearAllRunsMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4 mr-2" />
+                )}
+                Clear All Run History
               </Button>
             </div>
           </div>
@@ -2459,6 +2905,114 @@ export function Settings() {
           </Button>
         </CardContent>
       </Card>
+      </>
+      )}
+
+      {activeTab === "special" && (
+      <>
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold">Special Features</h2>
+          <p className="text-sm text-muted-foreground">Limited-time and event-specific features</p>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <span className="text-xl">&#10052;&#65039;&#129351;</span>
+              Winter Olympics Gold Zone
+            </CardTitle>
+            <CardDescription>
+              Auto-match Gold Zone Olympics coverage into a single unified channel with EPG
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-3">
+              <Switch
+                id="gold-zone-enabled"
+                checked={goldZoneData?.enabled ?? false}
+                onCheckedChange={(checked) => {
+                  updateGoldZone.mutate(
+                    { enabled: checked },
+                    {
+                      onSuccess: () => {
+                        toast.success(checked ? "Gold Zone enabled" : "Gold Zone disabled")
+                      },
+                    }
+                  )
+                }}
+              />
+              <Label htmlFor="gold-zone-enabled" className="cursor-pointer">
+                Enable Gold Zone
+              </Label>
+            </div>
+
+            {goldZoneData?.enabled && (
+              <div className="space-y-4 pl-1">
+                <div className="space-y-2">
+                  <Label htmlFor="gold-zone-channel">Channel Number</Label>
+                  <div className="flex items-center gap-2 max-w-xs">
+                    <Input
+                      id="gold-zone-channel"
+                      type="number"
+                      min={1}
+                      placeholder="999"
+                      value={goldZoneChannelDraft}
+                      onChange={(e) => setGoldZoneChannelDraft(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Channel Group</Label>
+                  <Select
+                    className="max-w-xs"
+                    value={goldZoneGroupDraft}
+                    onChange={(e) => setGoldZoneGroupDraft(e.target.value)}
+                  >
+                    <option value="">None (no group)</option>
+                    {channelGroupsQuery.data?.map((g) => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Channel Profiles</Label>
+                  <ChannelProfileSelector
+                    selectedIds={goldZoneProfileIds}
+                    onChange={(ids) => setGoldZoneProfileIds(ids)}
+                    disabled={!dispatcharrStatus.data?.connected}
+                    showWildcards={false}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Stream Profile</Label>
+                  <StreamProfileSelector
+                    value={goldZoneStreamProfileDraft}
+                    onChange={(id) => setGoldZoneStreamProfileDraft(id)}
+                    disabled={!dispatcharrStatus.data?.connected}
+                    isGlobalDefault
+                  />
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  All streams matching "Gold Zone" / "GoldZone" will be consolidated into a single channel.
+                  EPG data is fetched from an external source automatically during generation.
+                </p>
+
+                <Button onClick={handleSaveGoldZone} disabled={updateGoldZone.isPending}>
+                  {updateGoldZone.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4 mr-1" />
+                  )}
+                  Save
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </>
       )}
 

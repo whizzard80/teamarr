@@ -11,6 +11,7 @@ import {
   clearGameDataCache,
 } from "@/api/epg"
 import type { EPGGenerateRequest } from "@/api/epg"
+import { statsApi } from "@/api/stats"
 
 export function useStats() {
   return useQuery({
@@ -93,6 +94,19 @@ export function useClearGameDataCache() {
     mutationFn: clearGameDataCache,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["gameDataCacheStats"] })
+    },
+  })
+}
+
+// Run History Cleanup
+
+export function useClearAllRuns() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => statsApi.clearAllRuns(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["runs"] })
     },
   })
 }

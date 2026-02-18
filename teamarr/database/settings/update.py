@@ -357,6 +357,47 @@ def update_display_settings(conn: Connection, **kwargs) -> bool:
     return False
 
 
+def update_stream_filter_settings(
+    conn: Connection,
+    require_event_pattern: bool | None = None,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+) -> bool:
+    """Update global stream filter settings.
+
+    Args:
+        conn: Database connection
+        require_event_pattern: Require event-like patterns in stream names
+        include_patterns: Regex patterns that must match (optional)
+        exclude_patterns: Regex patterns that must not match (optional)
+
+    Returns:
+        True if updated
+    """
+    updates = []
+    values = []
+
+    if require_event_pattern is not None:
+        updates.append('stream_filter_require_event_pattern = ?')
+        values.append(int(require_event_pattern))
+    if include_patterns is not None:
+        updates.append('stream_filter_include_patterns = ?')
+        values.append(json.dumps(include_patterns))
+    if exclude_patterns is not None:
+        updates.append('stream_filter_exclude_patterns = ?')
+        values.append(json.dumps(exclude_patterns))
+
+    if not updates:
+        return False
+
+    query = f"UPDATE settings SET {', '.join(updates)} WHERE id = 1"
+    cursor = conn.execute(query, values)
+    if cursor.rowcount > 0:
+        logger.info('[UPDATED] Stream filter settings: %s', [u.split(' = ')[0] for u in updates])
+        return True
+    return False
+
+
 def increment_epg_generation_counter(conn: Connection) -> int:
     """Increment the EPG generation counter and return new value.
 
@@ -382,6 +423,7 @@ def update_team_filter_settings(
     mode: str | None = None,
     clear_include_teams: bool = False,
     clear_exclude_teams: bool = False,
+    bypass_filter_for_playoffs: bool | None = None,
 ) -> bool:
     """Update default team filtering settings.
 
@@ -393,6 +435,7 @@ def update_team_filter_settings(
         mode: Filter mode ('include' or 'exclude')
         clear_include_teams: Set to True to clear include_teams to NULL
         clear_exclude_teams: Set to True to clear exclude_teams to NULL
+        bypass_filter_for_playoffs: Include all playoff games regardless of filter
 
     Returns:
         True if updated
@@ -426,6 +469,10 @@ def update_team_filter_settings(
     if mode is not None:
         updates.append("default_team_filter_mode = ?")
         values.append(mode)
+
+    if bypass_filter_for_playoffs is not None:
+        updates.append("default_bypass_filter_for_playoffs = ?")
+        values.append(int(bypass_filter_for_playoffs))
 
     if not updates:
         return False
@@ -636,5 +683,113 @@ def update_update_check_settings(
     cursor = conn.execute(query, values)
     if cursor.rowcount > 0:
         logger.info("[UPDATED] Update check settings: %s", [u.split(" = ")[0] for u in updates])
+        return True
+    return False
+
+
+def update_backup_settings(
+    conn: Connection,
+    enabled: bool | None = None,
+    cron: str | None = None,
+    max_count: int | None = None,
+    path: str | None = None,
+) -> bool:
+    """Update scheduled backup settings.
+
+    Args:
+        conn: Database connection
+        enabled: Master toggle for scheduled backups
+        cron: Cron expression for backup schedule
+        max_count: Maximum number of backups to keep (rotation)
+        path: Directory path for storing backups
+
+    Returns:
+        True if updated
+    """
+    updates = []
+    values = []
+
+    if enabled is not None:
+        updates.append("scheduled_backup_enabled = ?")
+        values.append(int(enabled))
+    if cron is not None:
+        # Validate cron expression
+        from croniter import croniter
+
+        try:
+            croniter(cron)
+        except (KeyError, ValueError) as e:
+            logger.warning("[BACKUP] Invalid cron expression '%s': %s", cron, e)
+            return False
+        updates.append("scheduled_backup_cron = ?")
+        values.append(cron)
+    if max_count is not None:
+        if max_count < 1:
+            logger.warning("[BACKUP] max_count must be at least 1, got %d", max_count)
+            return False
+        updates.append("scheduled_backup_max_count = ?")
+        values.append(max_count)
+    if path is not None:
+        updates.append("scheduled_backup_path = ?")
+        values.append(path)
+
+    if not updates:
+        return False
+
+    query = f"UPDATE settings SET {', '.join(updates)} WHERE id = 1"
+    cursor = conn.execute(query, values)
+    if cursor.rowcount > 0:
+        logger.info("[BACKUP] Updated settings: %s", [u.split(" = ")[0] for u in updates])
+        return True
+    return False
+
+
+def update_gold_zone_settings(
+    conn: Connection,
+    enabled: bool | None = None,
+    channel_number: int | None | object = _NOT_PROVIDED,
+    channel_group_id: int | None | object = _NOT_PROVIDED,
+    channel_profile_ids: list | None | object = _NOT_PROVIDED,
+    stream_profile_id: int | None | object = _NOT_PROVIDED,
+) -> bool:
+    """Update Gold Zone settings.
+
+    Args:
+        conn: Database connection
+        enabled: Enable/disable Gold Zone feature
+        channel_number: Channel number for the unified Gold Zone channel (None = clear)
+        channel_group_id: Dispatcharr channel group ID (None = clear)
+        channel_profile_ids: JSON-serializable list of profile IDs (None = all profiles)
+        stream_profile_id: Dispatcharr stream profile ID (None = clear)
+
+    Returns:
+        True if updated
+    """
+    updates = []
+    values = []
+
+    if enabled is not None:
+        updates.append("gold_zone_enabled = ?")
+        values.append(int(enabled))
+    if channel_number is not _NOT_PROVIDED:
+        updates.append("gold_zone_channel_number = ?")
+        values.append(channel_number)
+    if channel_group_id is not _NOT_PROVIDED:
+        updates.append("gold_zone_channel_group_id = ?")
+        values.append(channel_group_id)
+    if channel_profile_ids is not _NOT_PROVIDED:
+        updates.append("gold_zone_channel_profile_ids = ?")
+        values.append(json.dumps(channel_profile_ids) if channel_profile_ids is not None else None)
+    if stream_profile_id is not _NOT_PROVIDED:
+        updates.append("gold_zone_stream_profile_id = ?")
+        values.append(stream_profile_id)
+
+    if not updates:
+        return False
+
+    query = f"UPDATE settings SET {', '.join(updates)} WHERE id = 1"
+    cursor = conn.execute(query, values)
+    if cursor.rowcount > 0:
+        logger.info("[GOLD_ZONE] Updated settings: %s", [u.split(" = ")[0] for u in updates])
         return True
     return False

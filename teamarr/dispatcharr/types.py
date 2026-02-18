@@ -21,6 +21,7 @@ class DispatcharrChannel:
     logo_id: int | None = None
     logo_url: str | None = None
     streams: tuple[int, ...] = field(default_factory=tuple)
+    stream_profile_id: int | None = None
 
     @classmethod
     def from_api(cls, data: dict) -> "DispatcharrChannel":
@@ -39,6 +40,7 @@ class DispatcharrChannel:
             logo_id=data.get("logo_id"),
             logo_url=data.get("logo_url"),
             streams=streams,
+            stream_profile_id=data.get("stream_profile_id"),
         )
 
 

@@ -205,10 +205,18 @@ class CronScheduler:
         self._last_run = datetime.now()
         results = {
             "started_at": self._last_run.isoformat(),
+            "backup": {},
             "channel_reset": {},
             "cache_refresh": {},
             "epg_generation": {},
         }
+
+        # Scheduled backup (runs on its own cron, checked each tick)
+        try:
+            results["backup"] = self._task_backup()
+        except Exception as e:
+            logger.warning("[CRON] Backup task failed: %s", e)
+            results["backup"] = {"error": str(e)}
 
         # Scheduled channel reset (runs before EPG generation if due)
         try:
@@ -319,6 +327,69 @@ class CronScheduler:
             "deleted_count": deleted_count,
             "error_count": len(errors),
             "errors": errors if errors else None,
+        }
+
+    def _task_backup(self) -> dict:
+        """Run scheduled backup if enabled and due.
+
+        Checks its own cron expression (separate from the main EPG cron).
+        Uses the same 1-hour window approach as channel reset.
+
+        Returns:
+            Dict with backup status
+        """
+        from teamarr.database.settings import get_backup_settings
+
+        with self._db_factory() as conn:
+            settings = get_backup_settings(conn)
+
+        if not settings.enabled:
+            return {"skipped": True, "reason": "Scheduled backups not enabled"}
+
+        # Check if backup cron has fired since last scheduler run
+        try:
+            backup_cron = croniter(settings.cron, datetime.now())
+            last_backup_time = backup_cron.get_prev(datetime)
+
+            time_since_backup = (datetime.now() - last_backup_time).total_seconds()
+            if time_since_backup > 3600:  # More than 1 hour ago
+                return {
+                    "skipped": True,
+                    "reason": "Backup not due yet",
+                    "last_scheduled": last_backup_time.isoformat(),
+                }
+        except (KeyError, ValueError) as e:
+            logger.warning("[CRON] Invalid backup cron: %s", e)
+            return {"skipped": True, "reason": f"Invalid cron: {e}"}
+
+        # Perform the backup
+        logger.info("[CRON] Running scheduled backup")
+
+        from teamarr.services.backup_service import create_backup_service
+
+        backup_service = create_backup_service(self._db_factory, settings.path)
+        result = backup_service.create_backup(manual=False)
+
+        if not result.success:
+            logger.error("[CRON] Scheduled backup failed: %s", result.error)
+            return {"executed": True, "success": False, "error": result.error}
+
+        # Rotate old backups
+        rotation = backup_service.rotate_backups(settings.max_count)
+
+        logger.info(
+            "[CRON] Scheduled backup complete: %s (%d bytes), rotated %d",
+            result.filename,
+            result.size_bytes or 0,
+            rotation.deleted_count,
+        )
+
+        return {
+            "executed": True,
+            "success": True,
+            "filename": result.filename,
+            "size_bytes": result.size_bytes,
+            "rotated": rotation.deleted_count,
         }
 
     def _task_refresh_cache(self) -> dict:
@@ -538,3 +609,5 @@ def get_scheduler_status() -> dict:
         "last_run": _scheduler.last_run.isoformat() if _scheduler.last_run else None,
         "next_run": _scheduler.next_run.isoformat() if _scheduler.next_run else None,
     }
+
+

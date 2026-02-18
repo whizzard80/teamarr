@@ -28,6 +28,7 @@ import { StreamProfileSelector } from "@/components/StreamProfileSelector"
 import { StreamTimezoneSelector } from "@/components/StreamTimezoneSelector"
 import { TestPatternsModal, type PatternState } from "@/components/TestPatternsModal"
 import { TemplateAssignmentModal, type LocalTemplateAssignment } from "@/components/TemplateAssignmentModal"
+import { SoccerModeSelector, type SoccerMode } from "@/components/SoccerModeSelector"
 
 // Group mode
 type GroupMode = "single" | "multi" | null
@@ -94,6 +95,7 @@ export function EventGroupForm() {
     include_teams: null,
     exclude_teams: null,
     team_filter_mode: "include",
+    bypass_filter_for_playoffs: null,  // null = use default
   })
 
   // Single-league selection (stores the slug for single-league mode during creation)
@@ -104,6 +106,11 @@ export function EventGroupForm() {
 
   // Multi-league selection
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set())
+
+  // Soccer mode state (for soccer-only groups)
+  const [soccerMode, setSoccerMode] = useState<SoccerMode>(null)
+  // Soccer followed teams (for teams mode)
+  const [soccerFollowedTeams, setSoccerFollowedTeams] = useState<Array<{ provider: string; team_id: string; name?: string | null }>>([])
 
   // Fetch existing group if editing
   const { data: group, isLoading: isLoadingGroup } = useGroup(
@@ -124,6 +131,9 @@ export function EventGroupForm() {
   })
   const cachedLeagues = leaguesResponse?.leagues
 
+  // Show soccer mode UI for all multi-league groups
+  const showSoccerMode = groupMode === 'multi'
+
   // Fetch channel groups from Dispatcharr
   const { data: channelGroups, refetch: refetchChannelGroups, isError: channelGroupsError, error: channelGroupsErrorMsg } = useQuery({
     queryKey: ["dispatcharr-channel-groups"],
@@ -140,7 +150,14 @@ export function EventGroupForm() {
   // Filter state for channel groups
   const [channelGroupFilter, setChannelGroupFilter] = useState("")
 
-  // Collapsible section states
+  // Collapsible section states - all start collapsed
+  const [basicSettingsExpanded, setBasicSettingsExpanded] = useState(false)
+  const [leagueSelectionExpanded, setLeagueSelectionExpanded] = useState(false)
+  const [streamTimezoneExpanded, setStreamTimezoneExpanded] = useState(false)
+  const [channelSettingsExpanded, setChannelSettingsExpanded] = useState(false)
+  const [channelGroupExpanded, setChannelGroupExpanded] = useState(false)
+  const [channelProfilesExpanded, setChannelProfilesExpanded] = useState(false)
+  const [streamProfileExpanded, setStreamProfileExpanded] = useState(false)
   const [regexExpanded, setRegexExpanded] = useState(false)
   const [teamFilterExpanded, setTeamFilterExpanded] = useState(false)
 
@@ -238,6 +255,7 @@ export function EventGroupForm() {
         include_teams: group.include_teams,
         exclude_teams: group.exclude_teams,
         team_filter_mode: group.team_filter_mode || "include",
+        bypass_filter_for_playoffs: group.bypass_filter_for_playoffs,
         // Multi-sport enhancements (Phase 3)
         channel_sort_order: group.channel_sort_order || "time",
         overlap_handling: group.overlap_handling || "add_stream",
@@ -265,12 +283,22 @@ export function EventGroupForm() {
         // Multi league mode
         setSelectedLeagues(new Set(group.leagues))
       }
+
+      // Set soccer mode if present (map legacy 'all' → 'manual')
+      if (group.soccer_mode) {
+        const mode = group.soccer_mode === 'all' ? 'manual' : group.soccer_mode
+        setSoccerMode(mode as SoccerMode)
+      }
+      // Set soccer followed teams if present
+      if (group.soccer_followed_teams) {
+        setSoccerFollowedTeams(group.soccer_followed_teams)
+      }
     }
   }, [group, cachedLeagues])
 
 
   // Sync selectedLeague/selectedLeagues to formData.leagues during create
-  // This ensures the UI shows correct mode badge and Multi-Sport Settings appear
+  // This ensures the UI shows correct mode badge and Event Overlap settings appear
   useEffect(() => {
     if (!isEdit && groupMode === "single" && selectedLeague) {
       setFormData(prev => ({ ...prev, leagues: [selectedLeague] }))
@@ -329,8 +357,15 @@ export function EventGroupForm() {
       }
     }
 
-    if (leagues.length === 0) {
+    // Validate leagues (allow empty for soccer_mode='teams' which resolves dynamically)
+    if (leagues.length === 0 && soccerMode !== 'teams') {
       toast.error("At least one league is required")
+      return
+    }
+
+    // Validate teams mode requires at least one followed team
+    if (soccerMode === 'teams' && soccerFollowedTeams.length === 0) {
+      toast.error("At least one team must be followed in teams mode")
       return
     }
 
@@ -339,7 +374,11 @@ export function EventGroupForm() {
         ...formData,
         leagues,
         // Only include group_mode if it's set (not null)
-        ...(groupMode && { group_mode: groupMode })
+        ...(groupMode && { group_mode: groupMode }),
+        // Include soccer_mode for soccer groups
+        soccer_mode: soccerMode,
+        // Include followed teams for teams mode
+        soccer_followed_teams: soccerMode === 'teams' ? soccerFollowedTeams : null,
       }
 
       if (isEdit) {
@@ -369,6 +408,13 @@ export function EventGroupForm() {
           }
           if (shouldClear(group.stream_timezone, formData.stream_timezone)) {
             updateData.clear_stream_timezone = true
+          }
+          if (shouldClear(group.soccer_mode, soccerMode)) {
+            updateData.clear_soccer_mode = true
+          }
+          // Clear followed teams when switching away from teams mode
+          if (group.soccer_followed_teams?.length && soccerMode !== 'teams') {
+            updateData.clear_soccer_followed_teams = true
           }
         }
 
@@ -519,15 +565,19 @@ export function EventGroupForm() {
           <CardContent>
             <LeaguePicker
               selectedLeagues={Array.from(selectedLeagues)}
-              onSelectionChange={(leagues) => setSelectedLeagues(new Set(leagues))}
+              onSelectionChange={(leagues) => {
+                setSelectedLeagues(new Set(leagues))
+                setFormData(prev => ({ ...prev, leagues }))
+              }}
               maxHeight="max-h-96"
+              maxBadges={10}
             />
           </CardContent>
         </Card>
       )}
 
-      {/* Settings Section - shown when leagues selected or in edit mode */}
-      {(isEdit || formData.leagues.length > 0 || selectedLeague || selectedLeagues.size > 0) && (
+      {/* Settings Section - shown when leagues selected, mode chosen, or in edit mode */}
+      {(isEdit || groupMode !== null || formData.leagues.length > 0 || selectedLeague || selectedLeagues.size > 0) && (
         <div className="space-y-6">
           {/* Child Group Notice */}
           {isChildGroup && (
@@ -549,10 +599,45 @@ export function EventGroupForm() {
 
           {/* Group Type Indicator - hidden for child groups */}
           {!isChildGroup && (
-            <div className="flex items-center gap-2 px-1 py-2">
-              <Badge variant="secondary" className="font-normal">
-                {formData.leagues.length > 1 ? "Multi-Sport / Multi-League" : "Single League"}
-              </Badge>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">Group Type</Label>
+                <span className="text-xs text-muted-foreground/70">Set at creation, cannot be changed</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 rounded-md border-2 text-sm",
+                    formData.leagues.length <= 1
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-muted bg-muted/30 text-muted-foreground"
+                  )}
+                >
+                  <div className={cn(
+                    "w-3 h-3 rounded-full border-2",
+                    formData.leagues.length <= 1
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/50"
+                  )} />
+                  <span>Single League</span>
+                </div>
+                <div
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 rounded-md border-2 text-sm",
+                    formData.leagues.length > 1
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-muted bg-muted/30 text-muted-foreground"
+                  )}
+                >
+                  <div className={cn(
+                    "w-3 h-3 rounded-full border-2",
+                    formData.leagues.length > 1
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/50"
+                  )} />
+                  <span>Multi-League</span>
+                </div>
+              </div>
             </div>
           )}
 
@@ -598,10 +683,20 @@ export function EventGroupForm() {
 
           {/* Basic Info - hidden for child groups (inherited from parent) */}
           {!isChildGroup && <Card>
-            <CardHeader>
-              <CardTitle>Basic Settings</CardTitle>
+            <CardHeader
+              className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+              onClick={() => setBasicSettingsExpanded(!basicSettingsExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                {basicSettingsExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
+                <CardTitle>Basic Settings</CardTitle>
+              </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            {basicSettingsExpanded && <CardContent className="space-y-4">
               <div className={cn("grid gap-4", isChildGroup ? "grid-cols-1" : "grid-cols-2")}>
                 <div className="space-y-2">
                   <Label htmlFor="name">Group Name</Label>
@@ -751,15 +846,13 @@ export function EventGroupForm() {
                 </div>
               )}
 
-              {/* Full league picker for multi-league groups in edit mode */}
-              {isEdit && groupMode === "multi" && (
-                <div className="space-y-2">
-                  <Label>Matching Leagues</Label>
-                  <LeaguePicker
-                    selectedLeagues={formData.leagues}
-                    onSelectionChange={(leagues) => setFormData({ ...formData, leagues })}
-                    maxHeight="max-h-72"
-                  />
+              {/* M3U Source Info - watermark style */}
+              {formData.m3u_group_name && (
+                <div className="text-xs text-muted-foreground/70 pt-3">
+                  {formData.m3u_account_name && (
+                    <div>M3U: {formData.m3u_account_name} (#{formData.m3u_account_id})</div>
+                  )}
+                  <div>Group: {formData.m3u_group_name} (#{formData.m3u_group_id})</div>
                 </div>
               )}
 
@@ -770,389 +863,95 @@ export function EventGroupForm() {
                 />
                 <Label className="font-normal">Enabled</Label>
               </div>
-            </CardContent>
+            </CardContent>}
           </Card>}
 
-          {/* Stream Timezone */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Stream Timezone</CardTitle>
-              <CardDescription>
-                Timezone used in stream names for date matching
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <StreamTimezoneSelector
-                value={formData.stream_timezone ?? null}
-                onChange={(tz) => setFormData({ ...formData, stream_timezone: tz })}
-              />
-              <p className="text-xs text-muted-foreground mt-2">
-                Optional. Timezone markers (e.g., "ET", "PT") are auto-detected. Set this only if your provider omits them and uses a different timezone than yours.
-              </p>
-            </CardContent>
-          </Card>
-
-          {/* Channel Settings - hidden for child groups */}
-          {!isChildGroup && <Card>
-            <CardHeader>
-              <CardTitle>Channel Settings</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Channel Assignment Mode - V1 style tile cards */}
-              <div className="space-y-2">
-                <Label>Channel Assignment Mode</Label>
-                <div className="grid grid-cols-2 gap-3">
-                  {/* AUTO Card */}
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ ...formData, channel_assignment_mode: "auto", channel_start_number: null })}
-                    className={cn(
-                      "flex flex-col items-start p-4 rounded-lg border-2 text-left transition-all",
-                      formData.channel_assignment_mode === "auto"
-                        ? "border-green-500 bg-green-500/10"
-                        : "border-border hover:border-muted-foreground/50"
-                    )}
-                  >
-                    <span className={cn(
-                      "font-semibold text-sm",
-                      formData.channel_assignment_mode === "auto" && "text-green-500"
-                    )}>
-                      AUTO
-                    </span>
-                    <span className="text-xs text-muted-foreground mt-1">
-                      Auto-assign from global range. Drag to set priority on Event Groups page.
-                    </span>
-                  </button>
-
-                  {/* MANUAL Card */}
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ ...formData, channel_assignment_mode: "manual" })}
-                    className={cn(
-                      "flex flex-col items-start p-4 rounded-lg border-2 text-left transition-all",
-                      formData.channel_assignment_mode === "manual"
-                        ? "border-primary bg-primary/10"
-                        : "border-border hover:border-muted-foreground/50"
-                    )}
-                  >
-                    <span className={cn(
-                      "font-semibold text-sm",
-                      formData.channel_assignment_mode === "manual" && "text-primary"
-                    )}>
-                      MANUAL
-                    </span>
-                    <span className="text-xs text-muted-foreground mt-1">
-                      Specify a fixed channel start number below.
-                    </span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Channel Start Number - only shown for manual */}
-              {formData.channel_assignment_mode === "manual" && (
-                <div className="space-y-2">
-                  <Label htmlFor="channel_start">Channel Start Number</Label>
-                  <Input
-                    id="channel_start"
-                    type="number"
-                    min={1}
-                    value={formData.channel_start_number || ""}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        channel_start_number: e.target.value ? Number(e.target.value) : null,
-                      })
-                    }
-                    placeholder="Required for MANUAL mode"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    First channel number for created channels
-                  </p>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="duplicate_handling">Duplicate Event Handling</Label>
-                <Select
-                  id="duplicate_handling"
-                  value={formData.duplicate_event_handling}
-                  onChange={(e) =>
-                    setFormData({ ...formData, duplicate_event_handling: e.target.value })
-                  }
-                >
-                  <option value="consolidate">Consolidate (merge into one channel)</option>
-                  <option value="separate">Separate (one channel per stream)</option>
-                  <option value="ignore">Ignore (skip duplicates)</option>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  How to handle multiple streams matching the same event
-                </p>
-              </div>
-            </CardContent>
-          </Card>}
-
-          {/* Channel Group Assignment - hidden for child groups */}
-          {!isChildGroup && <Card>
-            <CardHeader>
-              <CardTitle>Channel Group</CardTitle>
-              <CardDescription>
-                Managed channels will be assigned to the selected group in Dispatcharr
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-                <div className="flex flex-col gap-3">
-                  {/* Existing group option with nested group list */}
-                  <div>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="channel_group_mode"
-                        value="static"
-                        checked={formData.channel_group_mode === "static"}
-                        onChange={() => setFormData({ ...formData, channel_group_mode: "static" })}
-                        className="accent-primary"
-                      />
-                      <span className="text-sm">Existing group</span>
-                    </label>
-                    {/* Nested group selection - always visible but disabled when not static */}
-                    <div className={`mt-2 ml-6 space-y-2 ${formData.channel_group_mode !== "static" ? "opacity-40 pointer-events-none" : ""}`}>
-                <div className="flex gap-2 items-center">
-                  <Input
-                    placeholder="Filter groups..."
-                    value={channelGroupFilter}
-                    onChange={(e) => setChannelGroupFilter(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setShowCreateGroup(!showCreateGroup)}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-                {showCreateGroup && (
-                  <div className="flex gap-2 p-2 bg-muted/50 rounded-md">
-                    <Input
-                      placeholder="New group name..."
-                      value={newGroupName}
-                      onChange={(e) => setNewGroupName(e.target.value)}
-                      className="flex-1"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={creatingGroup || !newGroupName.trim()}
-                      onClick={async () => {
-                        setCreatingGroup(true)
-                        const created = await createChannelGroup(newGroupName.trim())
-                        setCreatingGroup(false)
-                        if (created) {
-                          toast.success(`Created group "${created.name}"`)
-                          setFormData({ ...formData, channel_group_id: created.id })
-                          setNewGroupName("")
-                          setShowCreateGroup(false)
-                          setChannelGroupFilter("")
-                          refetchChannelGroups()
-                        } else {
-                          toast.error("Failed to create group")
-                        }
-                      }}
-                    >
-                      {creatingGroup ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setShowCreateGroup(false)
-                        setNewGroupName("")
-                      }}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                )}
-                <div className="border rounded-md max-h-36 overflow-y-auto">
-                  {/* "None" option */}
-                  <button
-                    type="button"
-                    className={cn(
-                      "w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent border-b",
-                      !formData.channel_group_id && "bg-primary/10"
-                    )}
-                    onClick={() => setFormData({ ...formData, channel_group_id: undefined })}
-                  >
-                    <div className={cn(
-                      "w-4 h-4 border rounded flex items-center justify-center",
-                      !formData.channel_group_id && "bg-primary border-primary"
-                    )}>
-                      {!formData.channel_group_id && <Check className="h-3 w-3 text-primary-foreground" />}
-                    </div>
-                    <span className="text-muted-foreground italic">&lt;No group assignment&gt;</span>
-                  </button>
-                  {channelGroupsError ? (
-                    <div className="p-3 text-sm text-destructive text-center">
-                      {channelGroupsErrorMsg instanceof Error ? channelGroupsErrorMsg.message : "Failed to load channel groups"}
-                    </div>
-                  ) : filteredChannelGroups.length === 0 ? (
-                    <div className="p-3 text-sm text-muted-foreground text-center">
-                      {channelGroupFilter ? "No matching groups" : "No groups found"}
-                    </div>
+          {/* League Selection - combined soccer mode + other sports for multi-league groups */}
+          {showSoccerMode && !isChildGroup && (
+            <Card>
+              <CardHeader
+                className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+                onClick={() => setLeagueSelectionExpanded(!leagueSelectionExpanded)}
+              >
+                <div className="flex items-center gap-2">
+                  {leagueSelectionExpanded ? (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
                   ) : (
-                    filteredChannelGroups.map((g) => {
-                      const isSelected = formData.channel_group_id === g.id
-                      return (
-                        <button
-                          key={g.id}
-                          type="button"
-                          className={cn(
-                            "w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent border-b last:border-b-0",
-                            isSelected && "bg-primary/10"
-                          )}
-                          onClick={() => setFormData({ ...formData, channel_group_id: g.id })}
-                        >
-                          <div className={cn(
-                            "w-4 h-4 border rounded flex items-center justify-center",
-                            isSelected && "bg-primary border-primary"
-                          )}>
-                            {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
-                          </div>
-                          <span className="flex-1">{g.name}</span>
-                        </button>
-                      )
-                    })
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
                   )}
-                </div>
-                    </div>
-                  </div>
-
-                  {/* Dynamic group options */}
-                  <div className="border rounded-md bg-muted/30">
-                    <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Dynamic Groups
-                    </div>
-                    <div className="divide-y">
-                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
-                        <input
-                          type="radio"
-                          name="channel_group_mode"
-                          value="{sport}"
-                          checked={formData.channel_group_mode === "{sport}"}
-                          onChange={() => setFormData({ ...formData, channel_group_mode: "{sport}" })}
-                          className="accent-primary"
-                        />
-                        <div className="flex-1">
-                          <code className="text-sm font-medium bg-muted px-1 rounded">{"{sport}"}</code>
-                          <p className="text-xs text-muted-foreground mt-0.5">Assign channels to a group by sport name (e.g., Basketball). Group created if it doesn't exist.</p>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
-                        <input
-                          type="radio"
-                          name="channel_group_mode"
-                          value="{league}"
-                          checked={formData.channel_group_mode === "{league}"}
-                          onChange={() => setFormData({ ...formData, channel_group_mode: "{league}" })}
-                          className="accent-primary"
-                        />
-                        <div className="flex-1">
-                          <code className="text-sm font-medium bg-muted px-1 rounded">{"{league}"}</code>
-                          <p className="text-xs text-muted-foreground mt-0.5">Assign channels to a group by league name (e.g., NBA, NFL). Group created if it doesn't exist.</p>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
-                        <input
-                          type="radio"
-                          name="channel_group_mode"
-                          value="custom"
-                          checked={formData.channel_group_mode !== "static" && formData.channel_group_mode !== "{sport}" && formData.channel_group_mode !== "{league}"}
-                          onChange={() => setFormData({ ...formData, channel_group_mode: "{sport} | {league}" })}
-                          className="accent-primary"
-                        />
-                        <div className="flex-1">
-                          <span className="text-sm font-medium">Custom</span>
-                          <p className="text-xs text-muted-foreground mt-0.5">Define a custom pattern with variables.</p>
-                        </div>
-                      </label>
-                      {formData.channel_group_mode !== "static" && formData.channel_group_mode !== "{sport}" && formData.channel_group_mode !== "{league}" && (
-                        <div className="p-3 space-y-2">
-                          <Input
-                            value={formData.channel_group_mode}
-                            onChange={(e) => setFormData({ ...formData, channel_group_mode: e.target.value })}
-                            placeholder="Sports | {sport} | {league}"
-                            className="font-mono text-sm"
-                          />
-                          <p className="text-xs text-muted-foreground">
-                            Available: <code className="bg-muted px-1 rounded">{"{sport}"}</code>, <code className="bg-muted px-1 rounded">{"{league}"}</code>
-                          </p>
-                        </div>
-                      )}
-                    </div>
+                  <div>
+                    <CardTitle>League Selection</CardTitle>
+                    {leagueSelectionExpanded && (
+                      <CardDescription>
+                        Configure which leagues this group will match
+                      </CardDescription>
+                    )}
                   </div>
                 </div>
-            </CardContent>
-          </Card>}
-
-          {/* Channel Profiles - hidden for child groups */}
-          {!isChildGroup && <Card>
-            <CardHeader>
-              <CardTitle>Channel Profiles</CardTitle>
-              <CardDescription>
-                Managed channels will be added to the selected profiles in Dispatcharr
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-                <label className="flex items-center gap-2 mb-2 cursor-pointer">
-                  <Checkbox
-                    checked={useDefaultProfiles}
-                    onCheckedChange={() => {
-                      const newValue = !useDefaultProfiles
-                      setUseDefaultProfiles(newValue)
-                      if (newValue) {
-                        setFormData({ ...formData, channel_profile_ids: null })
-                      } else {
-                        setFormData({ ...formData, channel_profile_ids: [] })
-                      }
+              </CardHeader>
+              {leagueSelectionExpanded && <CardContent className="space-y-6">
+                {/* Non-Soccer Sports Section */}
+                <div className="space-y-3">
+                  <Label className="text-base font-medium">Non-Soccer Sports</Label>
+                  <LeaguePicker
+                    selectedLeagues={Array.from(selectedLeagues).filter(slug => {
+                      // Only show non-soccer leagues in this picker
+                      const league = cachedLeagues?.find(l => l.slug === slug)
+                      return league?.sport?.toLowerCase() !== 'soccer'
+                    })}
+                    onSelectionChange={(otherLeagues) => {
+                      // Merge with soccer leagues
+                      const soccerLeagues = Array.from(selectedLeagues).filter(slug => {
+                        const league = cachedLeagues?.find(l => l.slug === slug)
+                        return league?.sport?.toLowerCase() === 'soccer'
+                      })
+                      const allLeagues = [...soccerLeagues, ...otherLeagues]
+                      setSelectedLeagues(new Set(allLeagues))
+                      setFormData(prev => ({ ...prev, leagues: allLeagues }))
                     }}
+                    excludeSport="soccer"
+                    maxHeight="max-h-64"
+                    showSearch={true}
+                    showSelectedBadges={true}
+                    maxBadges={10}
                   />
-                  <span className="text-sm font-normal">
-                    Use default channel profiles (set in Integrations tab in Settings)
-                  </span>
-                </label>
-                {!useDefaultProfiles && (
-                  <p className="text-xs text-muted-foreground mb-2">
-                    Select specific profiles for this group
-                  </p>
-                )}
-                <ChannelProfileSelector
-                  selectedIds={formData.channel_profile_ids || []}
-                  onChange={(ids) => setFormData({ ...formData, channel_profile_ids: ids })}
-                  disabled={useDefaultProfiles}
-                />
-            </CardContent>
-          </Card>}
+                </div>
 
-          {/* Stream Profile - hidden for child groups */}
-          {!isChildGroup && <Card>
-            <CardHeader>
-              <CardTitle>Stream Profile</CardTitle>
-              <CardDescription>
-                How streams are processed when played
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <StreamProfileSelector
-                value={formData.stream_profile_id ?? null}
-                onChange={(id) => setFormData({ ...formData, stream_profile_id: id })}
-              />
-              <p className="text-xs text-muted-foreground mt-2">
-                How streams are processed (ffmpeg, VLC, proxy, etc). Leave empty to use global default.
-              </p>
-            </CardContent>
-          </Card>}
+                {/* Divider */}
+                <div className="border-t" />
+
+                {/* Soccer Mode Section */}
+                <div className="space-y-3">
+                  <Label className="text-base font-medium">Soccer Leagues</Label>
+                  <SoccerModeSelector
+                    mode={soccerMode}
+                    onModeChange={(mode) => {
+                      setSoccerMode(mode)
+                      // When switching to 'teams' mode, soccer leagues are auto-managed
+                      // Keep any non-soccer leagues the user has selected
+                    }}
+                    selectedLeagues={Array.from(selectedLeagues).filter(slug => {
+                      // Only pass soccer leagues to SoccerModeSelector
+                      const league = cachedLeagues?.find(l => l.slug === slug)
+                      return league?.sport?.toLowerCase() === 'soccer'
+                    })}
+                    onLeaguesChange={(soccerLeagues) => {
+                      // Merge soccer leagues with existing non-soccer leagues
+                      const nonSoccerLeagues = Array.from(selectedLeagues).filter(slug => {
+                        const league = cachedLeagues?.find(l => l.slug === slug)
+                        return league?.sport?.toLowerCase() !== 'soccer'
+                      })
+                      const allLeagues = [...nonSoccerLeagues, ...soccerLeagues]
+                      setSelectedLeagues(new Set(allLeagues))
+                      setFormData(prev => ({ ...prev, leagues: allLeagues }))
+                    }}
+                    followedTeams={soccerFollowedTeams}
+                    onFollowedTeamsChange={setSoccerFollowedTeams}
+                  />
+                </div>
+              </CardContent>}
+            </Card>
+          )}
 
           {/* Custom Regex - Collapsible section (available for all groups including children) */}
           <Card>
@@ -1167,33 +966,32 @@ export function EventGroupForm() {
                 ) : (
                   <ChevronRight className="h-4 w-4 text-muted-foreground" />
                 )}
-                <CardTitle className="text-base">Custom Regex</CardTitle>
+                <CardTitle>Custom Regex</CardTitle>
               </button>
-              {isEdit && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setTestPatternsOpen(true)}
-                  className="gap-1.5"
-                >
-                  <FlaskConical className="h-3.5 w-3.5" />
-                  Test Patterns
-                </Button>
-              )}
             </CardHeader>
 
             {regexExpanded && (
               <CardContent className="space-y-6 pt-0">
-                {/* Stream Filtering Subsection */}
-                <div className="space-y-4">
-                  <div className="border-b pb-2">
-                    <h4 className="font-medium text-sm">Stream Filtering</h4>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Streams are automatically filtered to only include game streams (those with vs, @, or at).
+                {/* Pattern Tester - only in edit mode */}
+                {isEdit && (
+                  <div className="pb-4 border-b">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setTestPatternsOpen(true)}
+                      className="gap-2"
+                    >
+                      <FlaskConical className="h-4 w-4" />
+                      Open Pattern Tester
+                    </Button>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Test your regex patterns against actual stream names from this group
                     </p>
                   </div>
+                )}
 
+                {/* Stream Filtering Subsection */}
+                <div className="space-y-4">
                   {/* Skip Builtin Filter */}
                   <label className="flex items-center gap-3 cursor-pointer">
                     <Checkbox
@@ -1537,14 +1335,7 @@ export function EventGroupForm() {
                     ) : (
                       <ChevronRight className="h-4 w-4 text-muted-foreground" />
                     )}
-                    <CardTitle className="text-base">Team Filtering</CardTitle>
-                    {useDefaultTeamFilter ? (
-                      <Badge variant="outline" className="text-xs">Using default</Badge>
-                    ) : ((formData.include_teams?.length ?? 0) > 0 || (formData.exclude_teams?.length ?? 0) > 0) ? (
-                      <Badge variant="secondary" className="text-xs">
-                        {(formData.include_teams?.length ?? 0) + (formData.exclude_teams?.length ?? 0)} teams
-                      </Badge>
-                    ) : null}
+                    <CardTitle>Team Filtering</CardTitle>
                   </div>
                 </CardHeader>
               </button>
@@ -1653,7 +1444,26 @@ export function EventGroupForm() {
                         }}
                       />
 
-                      <div className="space-y-1">
+                      {/* Playoff bypass option */}
+                      <label className="flex items-center gap-2 cursor-pointer py-2">
+                        <Checkbox
+                          checked={formData.bypass_filter_for_playoffs ?? false}
+                          onCheckedChange={(checked) =>
+                            setFormData({
+                              ...formData,
+                              bypass_filter_for_playoffs: checked ? true : null,
+                            })
+                          }
+                        />
+                        <span className="text-sm">
+                          Include all playoff games (bypass team filter for postseason)
+                        </span>
+                      </label>
+                      <p className="text-xs text-muted-foreground -mt-1 ml-6">
+                        Unchecked uses the global default from Settings
+                      </p>
+
+                      <div className="space-y-1 mt-2">
                         <p className="text-xs text-muted-foreground">
                           {!(formData.include_teams?.length || formData.exclude_teams?.length)
                             ? "No teams selected. All events will be matched."
@@ -1674,59 +1484,484 @@ export function EventGroupForm() {
             </Card>
           )}
 
-          {/* Multi-Sport Settings - only show for multi-sport parent groups */}
-          {!isChildGroup && formData.leagues.length > 1 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Multi-Sport Settings</CardTitle>
-                <CardDescription>
-                  Configure how events from multiple leagues are handled
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="overlap_handling">Overlap Handling</Label>
-                  <Select
-                    id="overlap_handling"
-                    value={formData.overlap_handling || "add_stream"}
-                    onChange={(e) =>
-                      setFormData({ ...formData, overlap_handling: e.target.value })
-                    }
+          {/* Stream Timezone */}
+          <Card>
+            <CardHeader
+              className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+              onClick={() => setStreamTimezoneExpanded(!streamTimezoneExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                {streamTimezoneExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <CardTitle>Stream Timezone</CardTitle>
+                  {streamTimezoneExpanded && (
+                    <CardDescription>
+                      Timezone used in stream names for date matching
+                    </CardDescription>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            {streamTimezoneExpanded && <CardContent>
+              <StreamTimezoneSelector
+                value={formData.stream_timezone ?? null}
+                onChange={(tz) => setFormData({ ...formData, stream_timezone: tz })}
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Optional. Timezone markers (e.g., "ET", "PT") are auto-detected. Set this only if your provider omits them and uses a different timezone than yours.
+              </p>
+            </CardContent>}
+          </Card>
+
+          {/* Channel Settings - hidden for child groups */}
+          {!isChildGroup && <Card>
+            <CardHeader
+              className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+              onClick={() => setChannelSettingsExpanded(!channelSettingsExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                {channelSettingsExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
+                <CardTitle>Channel Settings</CardTitle>
+              </div>
+            </CardHeader>
+            {channelSettingsExpanded && <CardContent className="space-y-4">
+              {/* Channel Assignment Mode - V1 style tile cards */}
+              <div className="space-y-2">
+                <Label>Channel Assignment Mode</Label>
+                <div className="grid grid-cols-2 gap-3">
+                  {/* AUTO Card */}
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, channel_assignment_mode: "auto", channel_start_number: null })}
+                    className={cn(
+                      "flex flex-col items-start p-4 rounded-lg border-2 text-left transition-all",
+                      formData.channel_assignment_mode === "auto"
+                        ? "border-green-500 bg-green-500/10"
+                        : "border-border hover:border-muted-foreground/50"
+                    )}
                   >
-                    <option value="add_stream">Add Stream (default)</option>
-                    <option value="add_only">Add Only</option>
-                    <option value="create_all">Create All</option>
-                    <option value="skip">Skip</option>
-                  </Select>
+                    <span className={cn(
+                      "font-semibold text-sm",
+                      formData.channel_assignment_mode === "auto" && "text-green-500"
+                    )}>
+                      AUTO
+                    </span>
+                    <span className="text-xs text-muted-foreground mt-1">
+                      Auto-assign from global range. Drag to set priority on Event Groups page.
+                    </span>
+                  </button>
+
+                  {/* MANUAL Card */}
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, channel_assignment_mode: "manual" })}
+                    className={cn(
+                      "flex flex-col items-start p-4 rounded-lg border-2 text-left transition-all",
+                      formData.channel_assignment_mode === "manual"
+                        ? "border-primary bg-primary/10"
+                        : "border-border hover:border-muted-foreground/50"
+                    )}
+                  >
+                    <span className={cn(
+                      "font-semibold text-sm",
+                      formData.channel_assignment_mode === "manual" && "text-primary"
+                    )}>
+                      MANUAL
+                    </span>
+                    <span className="text-xs text-muted-foreground mt-1">
+                      Specify a fixed channel start number below.
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Channel Start Number - only shown for manual */}
+              {formData.channel_assignment_mode === "manual" && (
+                <div className="space-y-2">
+                  <Label htmlFor="channel_start">Channel Start Number</Label>
+                  <Input
+                    id="channel_start"
+                    type="number"
+                    min={1}
+                    value={formData.channel_start_number || ""}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        channel_start_number: e.target.value ? Number(e.target.value) : null,
+                      })
+                    }
+                    placeholder="Required for MANUAL mode"
+                  />
                   <p className="text-xs text-muted-foreground">
-                    How to handle events that overlap in time
+                    First channel number for created channels
                   </p>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+              )}
 
-          {/* M3U Source - hidden for child groups */}
-          {!isChildGroup && formData.m3u_group_name && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Stream Source</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between p-3 border rounded-md bg-muted/30">
+              {/* Duplicate Handling Section */}
+              <div className="space-y-4 pt-2 border-t">
+                <div className="space-y-1">
+                  <h4 className="font-medium text-sm">Duplicate Handling</h4>
+                  <p className="text-xs text-muted-foreground">
+                    How to handle when multiple streams match the same event
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="duplicate_handling">Within This Group</Label>
+                  <Select
+                    id="duplicate_handling"
+                    value={formData.duplicate_event_handling}
+                    onChange={(e) =>
+                      setFormData({ ...formData, duplicate_event_handling: e.target.value })
+                    }
+                  >
+                    <option value="consolidate">Consolidate (merge into one channel)</option>
+                    <option value="separate">Separate (one channel per stream)</option>
+                    <option value="ignore">Ignore (skip duplicates)</option>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    When multiple streams in this group match the same event
+                  </p>
+                </div>
+
+                {/* Only show for multi-league groups */}
+                {formData.leagues.length > 1 && (
+                  <div className="space-y-2">
+                    <Label htmlFor="overlap_handling">Across Other Groups</Label>
+                    <Select
+                      id="overlap_handling"
+                      value={formData.overlap_handling || "add_stream"}
+                      onChange={(e) =>
+                        setFormData({ ...formData, overlap_handling: e.target.value })
+                      }
+                    >
+                      <option value="add_stream">Add streams to other group's channel (if none, create)</option>
+                      <option value="add_only">Add streams only (don't create channel)</option>
+                      <option value="create_all">Keep separate (create own channel)</option>
+                      <option value="skip">Skip (don't add streams or channel)</option>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      When this group's streams match an event that another group already has
+                    </p>
+                  </div>
+                )}
+              </div>
+            </CardContent>}
+          </Card>}
+
+          {/* Channel Group Assignment - hidden for child groups */}
+          {!isChildGroup && <Card>
+            <CardHeader
+              className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+              onClick={() => setChannelGroupExpanded(!channelGroupExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                {channelGroupExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <CardTitle>Channel Group</CardTitle>
+                  {channelGroupExpanded && (
+                    <CardDescription>
+                      Managed channels will be assigned to the selected group in Dispatcharr
+                    </CardDescription>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            {channelGroupExpanded && <CardContent>
+                <div className="flex flex-col gap-3">
+                  {/* Existing group option with nested group list */}
                   <div>
-                    <div className="font-medium">{formData.m3u_group_name}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {formData.m3u_account_name && (
-                        <span>Account: {formData.m3u_account_name} · </span>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="channel_group_mode"
+                        value="static"
+                        checked={formData.channel_group_mode === "static"}
+                        onChange={() => setFormData({ ...formData, channel_group_mode: "static" })}
+                        className="accent-primary"
+                      />
+                      <span className="text-sm">Existing group</span>
+                    </label>
+                    {/* Nested group selection - always visible but disabled when not static */}
+                    <div className={`mt-2 ml-6 space-y-2 ${formData.channel_group_mode !== "static" ? "opacity-40 pointer-events-none" : ""}`}>
+                <div className="flex gap-2 items-center">
+                  <Input
+                    placeholder="Filter groups..."
+                    value={channelGroupFilter}
+                    onChange={(e) => setChannelGroupFilter(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setShowCreateGroup(!showCreateGroup)}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                {showCreateGroup && (
+                  <div className="flex gap-2 p-2 bg-muted/50 rounded-md">
+                    <Input
+                      placeholder="New group name..."
+                      value={newGroupName}
+                      onChange={(e) => setNewGroupName(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={creatingGroup || !newGroupName.trim()}
+                      onClick={async () => {
+                        setCreatingGroup(true)
+                        const created = await createChannelGroup(newGroupName.trim())
+                        setCreatingGroup(false)
+                        if (created) {
+                          toast.success(`Created group "${created.name}"`)
+                          setFormData({ ...formData, channel_group_id: created.id })
+                          setNewGroupName("")
+                          setShowCreateGroup(false)
+                          setChannelGroupFilter("")
+                          refetchChannelGroups()
+                        } else {
+                          toast.error("Failed to create group")
+                        }
+                      }}
+                    >
+                      {creatingGroup ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setShowCreateGroup(false)
+                        setNewGroupName("")
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
+                <div className="border rounded-md max-h-36 overflow-y-auto">
+                  {/* "None" option */}
+                  <button
+                    type="button"
+                    className={cn(
+                      "w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent border-b",
+                      !formData.channel_group_id && "bg-primary/10"
+                    )}
+                    onClick={() => setFormData({ ...formData, channel_group_id: undefined })}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 border rounded flex items-center justify-center",
+                      !formData.channel_group_id && "bg-primary border-primary"
+                    )}>
+                      {!formData.channel_group_id && <Check className="h-3 w-3 text-primary-foreground" />}
+                    </div>
+                    <span className="text-muted-foreground italic">&lt;No group assignment&gt;</span>
+                  </button>
+                  {channelGroupsError ? (
+                    <div className="p-3 text-sm text-destructive text-center">
+                      {channelGroupsErrorMsg instanceof Error ? channelGroupsErrorMsg.message : "Failed to load channel groups"}
+                    </div>
+                  ) : filteredChannelGroups.length === 0 ? (
+                    <div className="p-3 text-sm text-muted-foreground text-center">
+                      {channelGroupFilter ? "No matching groups" : "No groups found"}
+                    </div>
+                  ) : (
+                    filteredChannelGroups.map((g) => {
+                      const isSelected = formData.channel_group_id === g.id
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          className={cn(
+                            "w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent border-b last:border-b-0",
+                            isSelected && "bg-primary/10"
+                          )}
+                          onClick={() => setFormData({ ...formData, channel_group_id: g.id })}
+                        >
+                          <div className={cn(
+                            "w-4 h-4 border rounded flex items-center justify-center",
+                            isSelected && "bg-primary border-primary"
+                          )}>
+                            {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
+                          </div>
+                          <span className="flex-1">{g.name}</span>
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+                    </div>
+                  </div>
+
+                  {/* Dynamic group options */}
+                  <div className="border rounded-md bg-muted/30">
+                    <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Dynamic Groups
+                    </div>
+                    <div className="divide-y">
+                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
+                        <input
+                          type="radio"
+                          name="channel_group_mode"
+                          value="{sport}"
+                          checked={formData.channel_group_mode === "{sport}"}
+                          onChange={() => setFormData({ ...formData, channel_group_mode: "{sport}" })}
+                          className="accent-primary"
+                        />
+                        <div className="flex-1">
+                          <code className="text-sm font-medium bg-muted px-1 rounded">{"{sport}"}</code>
+                          <p className="text-xs text-muted-foreground mt-0.5">Assign channels to a group by sport name (e.g., Basketball). Group created if it doesn't exist.</p>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
+                        <input
+                          type="radio"
+                          name="channel_group_mode"
+                          value="{league}"
+                          checked={formData.channel_group_mode === "{league}"}
+                          onChange={() => setFormData({ ...formData, channel_group_mode: "{league}" })}
+                          className="accent-primary"
+                        />
+                        <div className="flex-1">
+                          <code className="text-sm font-medium bg-muted px-1 rounded">{"{league}"}</code>
+                          <p className="text-xs text-muted-foreground mt-0.5">Assign channels to a group by league name (e.g., NBA, NFL). Group created if it doesn't exist.</p>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-accent">
+                        <input
+                          type="radio"
+                          name="channel_group_mode"
+                          value="custom"
+                          checked={formData.channel_group_mode !== "static" && formData.channel_group_mode !== "{sport}" && formData.channel_group_mode !== "{league}"}
+                          onChange={() => setFormData({ ...formData, channel_group_mode: "{sport} | {league}" })}
+                          className="accent-primary"
+                        />
+                        <div className="flex-1">
+                          <span className="text-sm font-medium">Custom</span>
+                          <p className="text-xs text-muted-foreground mt-0.5">Define a custom pattern with variables.</p>
+                        </div>
+                      </label>
+                      {formData.channel_group_mode !== "static" && formData.channel_group_mode !== "{sport}" && formData.channel_group_mode !== "{league}" && (
+                        <div className="p-3 space-y-2">
+                          <Input
+                            value={formData.channel_group_mode}
+                            onChange={(e) => setFormData({ ...formData, channel_group_mode: e.target.value })}
+                            placeholder="Sports | {sport} | {league}"
+                            className="font-mono text-sm"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Available: <code className="bg-muted px-1 rounded">{"{sport}"}</code>, <code className="bg-muted px-1 rounded">{"{league}"}</code>
+                          </p>
+                        </div>
                       )}
-                      Group ID: {formData.m3u_group_id}
                     </div>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+            </CardContent>}
+          </Card>}
+
+          {/* Channel Profiles - hidden for child groups */}
+          {!isChildGroup && <Card>
+            <CardHeader
+              className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+              onClick={() => setChannelProfilesExpanded(!channelProfilesExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                {channelProfilesExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <CardTitle>Channel Profiles</CardTitle>
+                  {channelProfilesExpanded && (
+                    <CardDescription>
+                      Managed channels will be added to the selected profiles in Dispatcharr
+                    </CardDescription>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            {channelProfilesExpanded && <CardContent>
+                <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                  <Checkbox
+                    checked={useDefaultProfiles}
+                    onCheckedChange={() => {
+                      const newValue = !useDefaultProfiles
+                      setUseDefaultProfiles(newValue)
+                      if (newValue) {
+                        setFormData({ ...formData, channel_profile_ids: null })
+                      } else {
+                        setFormData({ ...formData, channel_profile_ids: [] })
+                      }
+                    }}
+                  />
+                  <span className="text-sm font-normal">
+                    Use default channel profiles (set in Integrations tab in Settings)
+                  </span>
+                </label>
+                {!useDefaultProfiles && (
+                  <p className="text-xs text-muted-foreground mb-2">
+                    Select specific profiles for this group
+                  </p>
+                )}
+                <ChannelProfileSelector
+                  selectedIds={formData.channel_profile_ids || []}
+                  onChange={(ids) => setFormData({ ...formData, channel_profile_ids: ids })}
+                  disabled={useDefaultProfiles}
+                />
+            </CardContent>}
+          </Card>}
+
+          {/* Stream Profile - hidden for child groups */}
+          {!isChildGroup && <Card>
+            <CardHeader
+              className="cursor-pointer hover:bg-muted/50 rounded-t-lg"
+              onClick={() => setStreamProfileExpanded(!streamProfileExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                {streamProfileExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <CardTitle>Stream Profile</CardTitle>
+                  {streamProfileExpanded && (
+                    <CardDescription>
+                      How streams are processed when played
+                    </CardDescription>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            {streamProfileExpanded && <CardContent>
+              <StreamProfileSelector
+                value={formData.stream_profile_id ?? null}
+                onChange={(id) => setFormData({ ...formData, stream_profile_id: id })}
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                How streams are processed (ffmpeg, VLC, proxy, etc). Leave empty to use global default.
+              </p>
+            </CardContent>}
+          </Card>}
 
           {/* Actions */}
           <div className="flex justify-end gap-2">

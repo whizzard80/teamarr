@@ -76,6 +76,18 @@ export interface DisplaySettings {
   tsdb_api_key: string | null  // Optional TheSportsDB premium API key
 }
 
+export interface StreamFilterSettings {
+  require_event_pattern: boolean
+  include_patterns: string[]
+  exclude_patterns: string[]
+}
+
+export interface StreamFilterSettingsUpdate {
+  require_event_pattern?: boolean
+  include_patterns?: string[]
+  exclude_patterns?: string[]
+}
+
 export interface TeamFilterEntry {
   provider: string
   team_id: string
@@ -88,6 +100,7 @@ export interface TeamFilterSettings {
   include_teams: TeamFilterEntry[] | null
   exclude_teams: TeamFilterEntry[] | null
   mode: "include" | "exclude"
+  bypass_filter_for_playoffs: boolean
 }
 
 export interface TeamFilterSettingsUpdate {
@@ -97,6 +110,7 @@ export interface TeamFilterSettingsUpdate {
   mode?: "include" | "exclude"
   clear_include_teams?: boolean
   clear_exclude_teams?: boolean
+  bypass_filter_for_playoffs?: boolean
 }
 
 export interface ChannelNumberingSettings {
@@ -183,6 +197,7 @@ export interface AllSettings {
   channel_numbering?: ChannelNumberingSettings
   stream_ordering?: StreamOrderingSettings
   update_check?: UpdateCheckSettings
+  stream_filter?: StreamFilterSettings
   epg_generation_counter: number
   schema_version: number
   // UI timezone info (read-only, from environment or fallback to epg_timezone)
@@ -322,6 +337,16 @@ export async function updateDisplaySettings(
   return api.put("/settings/display", data)
 }
 
+export async function getStreamFilterSettings(): Promise<StreamFilterSettings> {
+  return api.get("/settings/stream-filter")
+}
+
+export async function updateStreamFilterSettings(
+  data: StreamFilterSettingsUpdate
+): Promise<StreamFilterSettings> {
+  return api.put("/settings/stream-filter", data)
+}
+
 // Team Filter Settings API
 export async function getTeamFilterSettings(): Promise<TeamFilterSettings> {
   return api.get("/settings/team-filter")
@@ -401,5 +426,32 @@ export async function updateUpdateCheckSettings(
 // Check for updates
 export async function checkForUpdates(force: boolean = false): Promise<UpdateInfo> {
   return api.get(`/updates/check?force=${force}`)
+}
+
+// Gold Zone Settings (Olympics Special Feature)
+export interface GoldZoneSettings {
+  enabled: boolean
+  channel_number: number | null
+  channel_group_id: number | null
+  channel_profile_ids: (number | string)[] | null
+  stream_profile_id: number | null
+}
+
+export interface GoldZoneSettingsUpdate {
+  enabled?: boolean
+  channel_number?: number | null
+  channel_group_id?: number | null
+  channel_profile_ids?: (number | string)[] | null
+  stream_profile_id?: number | null
+}
+
+export async function getGoldZoneSettings(): Promise<GoldZoneSettings> {
+  return api.get("/settings/gold-zone")
+}
+
+export async function updateGoldZoneSettings(
+  data: GoldZoneSettingsUpdate
+): Promise<GoldZoneSettings> {
+  return api.put("/settings/gold-zone", data)
 }
 

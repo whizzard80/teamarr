@@ -11,25 +11,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from teamarr.database import get_db
-from teamarr.dispatcharr.factory import (
-    get_dispatcharr_connection,
-    test_dispatcharr_connection,
-)
+from teamarr.dispatcharr.factory import get_dispatcharr_connection
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dispatcharr")
-
-
-@router.get("/test")
-def test_connection() -> dict:
-    """Test connection to Dispatcharr.
-
-    Returns:
-        Connection test result with status and details
-    """
-    result = test_dispatcharr_connection(db_factory=get_db)
-    return result.to_dict()
 
 
 @router.get("/m3u-accounts")
@@ -256,49 +242,3 @@ def list_stream_profiles() -> list[dict]:
     ]
 
 
-@router.get("/epg-sources")
-def list_epg_sources() -> list[dict]:
-    """List EPG sources from Dispatcharr.
-
-    Returns:
-        List of EPG sources
-    """
-    conn = get_dispatcharr_connection(db_factory=get_db)
-    if not conn:
-        raise HTTPException(status_code=503, detail="Dispatcharr not configured or unavailable")
-
-    sources = conn.epg.list_sources()
-    return [
-        {
-            "id": s.id,
-            "name": s.name,
-            "url": s.url,
-            "status": s.status,
-        }
-        for s in sources
-    ]
-
-
-@router.post("/m3u-accounts/{account_id}/refresh")
-def refresh_m3u_account(account_id: int) -> dict:
-    """Trigger M3U refresh for an account.
-
-    Args:
-        account_id: M3U account ID to refresh
-
-    Returns:
-        Refresh result
-    """
-    conn = get_dispatcharr_connection(db_factory=get_db)
-    if not conn:
-        raise HTTPException(status_code=503, detail="Dispatcharr not configured or unavailable")
-
-    result = conn.m3u.refresh_account(account_id)
-    if result.success:
-        logger.info("[REFRESHED] M3U account_id=%d", account_id)
-    else:
-        logger.warning("[FAILED] Refresh M3U account_id=%d error=%s", account_id, result.message)
-    return {
-        "success": result.success,
-        "message": result.message,
-    }

@@ -1,0 +1,18 @@
+# Development override: mount local code so changes apply without rebuilding.
+#
+# To use:
+#   1. Copy to docker-compose.override.yml:
+#        cp docker-compose.override.yml.example docker-compose.override.yml
+#   2. Edit code in /home/crow/teamarr/ (main repo).
+#   3. Restart to pick up changes: docker compose restart teamarr
+#
+# Docker Compose automatically merges override.yml with docker-compose.yml.
+# Remove or rename docker-compose.override.yml when you want to test a normal build.
+
+services:
+  teamarr:
+    volumes:
+      - ./data:/app/data
+      # Mount Python app code so edits take effect after restart (no rebuild)
+      - ./teamarr:/app/teamarr
+      - ./app.py:/app/app.py

@@ -534,19 +534,28 @@ class FillerGenerator:
             # Check for conditional postgame template
             if config.postgame_conditional.enabled and last_event:
                 is_final = self._check_event_final(last_event)
-                if is_final and config.postgame_conditional.description_final:
+                cond = config.postgame_conditional
+                base = config.postgame_template
+
+                # Select conditional values based on game final status
+                # Fall back to base template if conditional not set
+                if is_final:
+                    title = cond.title_final or base.title
+                    subtitle = cond.subtitle_final or base.subtitle
+                    description = cond.description_final or base.description
+                else:
+                    title = cond.title_not_final or base.title
+                    subtitle = cond.subtitle_not_final or base.subtitle
+                    description = cond.description_not_final or base.description
+
+                # Only return conditional template if at least one field differs
+                if (title != base.title or subtitle != base.subtitle
+                        or description != base.description):
                     return FillerTemplate(
-                        title=config.postgame_template.title,
-                        subtitle=config.postgame_template.subtitle,
-                        description=config.postgame_conditional.description_final,
-                        art_url=config.postgame_template.art_url,
-                    )
-                elif not is_final and config.postgame_conditional.description_not_final:
-                    return FillerTemplate(
-                        title=config.postgame_template.title,
-                        subtitle=config.postgame_template.subtitle,
-                        description=config.postgame_conditional.description_not_final,
-                        art_url=config.postgame_template.art_url,
+                        title=title,
+                        subtitle=subtitle,
+                        description=description,
+                        art_url=base.art_url,
                     )
             return config.postgame_template
 
@@ -563,19 +572,28 @@ class FillerGenerator:
             # Check for conditional idle template
             if config.idle_conditional.enabled and last_event:
                 is_final = self._check_event_final(last_event)
-                if is_final and config.idle_conditional.description_final:
+                cond = config.idle_conditional
+                base = config.idle_template
+
+                # Select conditional values based on game final status
+                # Fall back to base template if conditional not set
+                if is_final:
+                    title = cond.title_final or base.title
+                    subtitle = cond.subtitle_final or base.subtitle
+                    description = cond.description_final or base.description
+                else:
+                    title = cond.title_not_final or base.title
+                    subtitle = cond.subtitle_not_final or base.subtitle
+                    description = cond.description_not_final or base.description
+
+                # Only return conditional template if at least one field differs
+                if (title != base.title or subtitle != base.subtitle
+                        or description != base.description):
                     return FillerTemplate(
-                        title=config.idle_template.title,
-                        subtitle=config.idle_template.subtitle,
-                        description=config.idle_conditional.description_final,
-                        art_url=config.idle_template.art_url,
-                    )
-                elif not is_final and config.idle_conditional.description_not_final:
-                    return FillerTemplate(
-                        title=config.idle_template.title,
-                        subtitle=config.idle_template.subtitle,
-                        description=config.idle_conditional.description_not_final,
-                        art_url=config.idle_template.art_url,
+                        title=title,
+                        subtitle=subtitle,
+                        description=description,
+                        art_url=base.art_url,
                     )
 
             return config.idle_template

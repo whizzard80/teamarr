@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   fetchPresets,
-  getPreset,
   createPreset,
   updatePreset,
   deletePreset,
@@ -13,14 +12,6 @@ export function usePresets() {
     queryKey: ["presets"],
     queryFn: fetchPresets,
     select: (data) => data.presets,
-  })
-}
-
-export function usePreset(presetId: number) {
-  return useQuery({
-    queryKey: ["preset", presetId],
-    queryFn: () => getPreset(presetId),
-    enabled: presetId > 0,
   })
 }
 

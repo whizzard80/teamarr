@@ -9,8 +9,13 @@ export interface FillerContent {
 }
 
 // Conditional settings for postgame/idle
+// Used to show different content based on whether last game is final
 export interface ConditionalSettings {
   enabled: boolean
+  title_final: string | null
+  title_not_final: string | null
+  subtitle_final: string | null
+  subtitle_not_final: string | null
   description_final: string | null
   description_not_final: string | null
 }
@@ -152,7 +157,7 @@ export interface TemplateCreate {
   event_channel_logo_url?: string | null
 }
 
-export interface TemplateUpdate extends Partial<TemplateCreate> {}
+export type TemplateUpdate = Partial<TemplateCreate>;
 
 export async function listTemplates(): Promise<Template[]> {
   return api.get("/templates")

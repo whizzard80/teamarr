@@ -70,13 +70,13 @@ export function getSportDisplayName(
  * @returns Display name string
  */
 export function getLeagueDisplayName(
-  league: { name: string; league_alias?: string | null },
+  league: { name: string; slug?: string; league_alias?: string | null },
   short = false
 ): string {
   if (short && league.league_alias) {
     return league.league_alias
   }
-  return league.name
+  return league.name || league.slug || "Unknown"
 }
 
 /**

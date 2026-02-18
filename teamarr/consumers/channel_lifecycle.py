@@ -17,6 +17,7 @@ from teamarr.consumers.lifecycle import (
     create_lifecycle_service,
     generate_event_tvg_id,
     get_lifecycle_settings,
+    slugify_keyword,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "ChannelLifecycleManager",
     "ChannelLifecycleService",
     "generate_event_tvg_id",
+    "slugify_keyword",
     "get_lifecycle_settings",
     "create_lifecycle_service",
 ]

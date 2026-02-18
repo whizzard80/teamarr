@@ -114,8 +114,8 @@ class CacheService:
 
         return RefreshResult(
             success=not result.get("errors"),
-            leagues_added=result.get("leagues_added", 0),
-            teams_added=result.get("teams_added", 0),
+            leagues_added=result.get("leagues_count", 0),
+            teams_added=result.get("teams_count", 0),
             duration_seconds=result.get("duration_seconds", 0.0),
             errors=result.get("errors", []),
         )

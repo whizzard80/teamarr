@@ -29,4 +29,8 @@ export const statsApi = {
     const params = epgType ? `?epg_type=${epgType}` : ""
     return api.get(`/stats/live${params}`)
   },
+
+  clearAllRuns: async (): Promise<{ deleted: number; message: string }> => {
+    return api.delete("/stats/runs")
+  },
 }

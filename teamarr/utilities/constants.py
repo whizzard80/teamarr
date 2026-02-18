@@ -95,6 +95,18 @@ TEAM_ALIASES: dict[str, str] = {
     "sevilla fc": "sevilla",
     "real sociedad": "real sociedad",
     "villarreal cf": "villarreal",
+    "girona fc": "girona",
+    "levante ud": "levante",
+    "ud levante": "levante",
+    "rcd espanyol": "espanyol barcelona",
+    "espanyol": "espanyol barcelona",
+    "valencia cf": "valencia",
+    "ca osasuna": "osasuna",
+    "osasuna": "osasuna",
+    # German: 1. FC Köln / Cologne
+    "1. fc koln": "fc cologne",
+    "1. fc cologne": "fc cologne",
+    "fc koln": "fc cologne",
     # Italian Serie A
     "inter": "inter milan",
     "inter milan": "internazionale",
@@ -286,10 +298,12 @@ PLACEHOLDER_PATTERNS: list[str] = [
 GAME_SEPARATORS: list[str] = [
     " vs. ",
     " vs ",
+    " VS ",  # Uppercase (e.g. "Florida VS Houston", "March Madness")
     " v. ",
     " v ",
     " @ ",
     " at ",
+    " - ",
     " x ",  # Portuguese/Spanish style
     " contre ",  # French
     " gegen ",  # German
@@ -379,6 +393,7 @@ LEAGUE_HINT_PATTERNS: list[tuple[str, str | list[str]]] = [
     (r"\bncaam[:\s-]", "mens-college-basketball"),
     (r"\bncaaw[:\s-]", "womens-college-basketball"),
     (r"\bncaab[:\s-]", "mens-college-basketball"),  # Alternate abbreviation
+    (r"\bmarch\s+madness[:\s-]", "mens-college-basketball"),
     # ==========================================================================
     # Soccer / Football - Multi-league umbrella brands first
     # ==========================================================================
@@ -414,6 +429,13 @@ LEAGUE_HINT_PATTERNS: list[tuple[str, str | list[str]]] = [
     (r"\buefa\s+champions\s+league[:\s-]", "uefa.champions"),
     (r"\bucl[:\s-]", "uefa.champions"),
     (r"\bchampions\s+league[:\s-]", "uefa.champions"),
+    (r"\buefa\s+europa\s+league[:\s-]", "uefa.europa"),
+    (r"\beuropa\s+league[:\s-]", "uefa.europa"),
+    (r"\buel[:\s-]", "uefa.europa"),
+    (r"\buefa\s+europa\s+conference\s+league[:\s-]", "uefa.europa.conf"),
+    (r"\buefa\s+conference\s+league[:\s-]", "uefa.europa.conf"),
+    (r"\bconference\s+league[:\s-]", "uefa.europa.conf"),
+    (r"\buecl[:\s-]", "uefa.europa.conf"),
     (r"\bspl[:\s-]", "ksa.1"),  # Saudi Pro League
     # ==========================================================================
     # Hockey - Multi-league umbrella brands first
@@ -517,6 +539,19 @@ SPORT_HINT_PATTERNS: list[tuple[str, str]] = [
     # Tennis (not currently supported)
     (r"\btennis\b", "Tennis"),
     # Golf (not currently supported)
+    # Motorsport/Racing (not currently supported - no team vs team matchups)
+    (r"\bformula\s*[1e]\b", "Motorsport"),
+    (r"\bf1\b", "Motorsport"),
+    (r"\bfe\b(?!\w)", "Motorsport"),  # FE = Formula E
+    (r"\bnascar\b", "Motorsport"),
+    (r"\bindycar\b", "Motorsport"),
+    (r"\bmotogp\b", "Motorsport"),
+    (r"\ble\s*mans\b", "Motorsport"),
+    (r"\bwrc\b", "Motorsport"),  # World Rally Championship
+    (r"\bsupercars\b", "Motorsport"),  # Australian Supercars
+    (r"\bgrand\s*prix\b", "Motorsport"),
+    (r"\brace\b.*\b(qualifying|practice|sprint)\b", "Motorsport"),
+    (r"\b(qualifying|practice|sprint)\b.*\brace\b", "Motorsport"),
     (r"\bgolf\b", "Golf"),
 ]
 
