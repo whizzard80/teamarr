@@ -1972,7 +1972,10 @@ class EventGroupProcessor:
         if not settings.enabled:
             # Even when globally disabled, respect group-level overrides
             if group.include_teams or group.exclude_teams:
-                return group.include_teams, group.exclude_teams, group.team_filter_mode, bypass_playoffs
+                return (
+                    group.include_teams, group.exclude_teams,
+                    group.team_filter_mode, bypass_playoffs,
+                )
             return None, None, "include", bypass_playoffs
 
         # If group has its own filter, use it

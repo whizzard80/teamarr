@@ -35,8 +35,8 @@ from .models import (
     TeamFilterSettingsModel,
     UpdateCheckSettingsModel,
 )
-from .stream_ordering import router as stream_ordering_router
 from .stream_filter import router as stream_filter_router
+from .stream_ordering import router as stream_ordering_router
 from .team_filter import router as team_filter_router
 from .update_check import router as update_check_router
 

@@ -169,8 +169,12 @@ DATE_PATTERNS = [
     # 1/17, 12/31 (MM/DD without year) - infer year based on proximity to today
     # Must come after MM/DD/YYYY to avoid partial matches
     (r"\b(\d{1,2})[/\-](\d{1,2})\b", "DATE_MASK_NO_YEAR"),
-    # European football: "Saturday, 23 August 2025 20:30" - match weekday + date so we mask the whole thing
-    (rf"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*,\s*(\d{{1,2}})\s+({_MONTHS})[a-z]*\s+(\d{{4}})\b", "DATE_MASK_WITH_YEAR"),
+    # European football: "Saturday, 23 August 2025 20:30"
+    (
+        rf"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+        rf"\s*,\s*(\d{{1,2}})\s+({_MONTHS})[a-z]*\s+(\d{{4}})\b",
+        "DATE_MASK_WITH_YEAR",
+    ),
     # 31 Dec 2025, 31 December 2025 - WITH year (check before without-year patterns)
     (rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTHS})[a-z]*\s+(\d{{4}})\b", "DATE_MASK_WITH_YEAR"),
     # Dec 31 2025, December 31 2025 - WITH year
