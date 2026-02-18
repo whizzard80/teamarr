@@ -64,6 +64,63 @@ def get_lifecycle_settings(conn: Connection) -> dict:
     }
 
 
+def compute_external_occupied(
+    db_factory: Any,
+    channel_manager: Any = None,
+) -> set[int]:
+    """Compute channel numbers in Dispatcharr NOT managed by Teamarr.
+
+    Compares the Dispatcharr channel cache against Teamarr's managed_channels
+    table to identify external channels whose numbers must be avoided.
+
+    Called once at the start of a generation run. Zero extra API calls —
+    uses the already-warm Dispatcharr channel cache.
+
+    Args:
+        db_factory: Factory function returning database connection
+        channel_manager: ChannelManager with populated cache
+
+    Returns:
+        Set of channel numbers occupied by non-Teamarr channels.
+    """
+    # Get all channel numbers from Dispatcharr
+    dispatcharr_numbers: set[int] = set()
+    if channel_manager:
+        for ch in channel_manager.get_channels():
+            if ch.channel_number:
+                try:
+                    dispatcharr_numbers.add(int(float(ch.channel_number)))
+                except (ValueError, TypeError):
+                    pass
+
+    # Get all channel numbers Teamarr manages
+    teamarr_numbers: set[int] = set()
+    with db_factory() as conn:
+        rows = conn.execute(
+            """SELECT channel_number FROM managed_channels
+               WHERE deleted_at IS NULL AND channel_number IS NOT NULL"""
+        ).fetchall()
+        for row in rows:
+            try:
+                teamarr_numbers.add(int(float(row["channel_number"])))
+            except (ValueError, TypeError):
+                pass
+
+    external = dispatcharr_numbers - teamarr_numbers
+
+    if external:
+        max_ext = max(external)
+        logger.info(
+            "[CHANNEL_NUM] External channels detected: %d numbers occupied (highest: #%d)",
+            len(external),
+            max_ext,
+        )
+    else:
+        logger.debug("[CHANNEL_NUM] No external channels detected in Dispatcharr")
+
+    return external
+
+
 def create_lifecycle_service(
     db_factory: Any,
     sports_service: Any,

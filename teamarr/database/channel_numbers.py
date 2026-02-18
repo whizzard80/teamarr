@@ -61,6 +61,7 @@ def get_next_channel_number(
     conn: Connection,
     group_id: int,
     auto_assign: bool = True,
+    external_occupied: set[int] | None = None,
 ) -> int | None:
     """Get the next available channel number for a group.
 
@@ -77,6 +78,9 @@ def get_next_channel_number(
         conn: Database connection
         group_id: The event group ID
         auto_assign: If True, auto-assign channel_start when missing (MANUAL mode only)
+        external_occupied: Channel numbers occupied by non-Teamarr channels in Dispatcharr.
+                          When provided, these numbers are skipped during assignment to
+                          prevent collisions with existing channels (#146).
 
     Returns:
         Next available channel number, or None if disabled/would exceed max
@@ -103,7 +107,7 @@ def get_next_channel_number(
         if numbering_mode == "strict_compact":
             # Strict compact: find next available globally across all AUTO groups
             # Skip the per-group logic entirely - return the globally available number
-            return get_next_compact_channel_number(conn)
+            return get_next_compact_channel_number(conn, external_occupied=external_occupied)
 
         # strict_block or rational_block: use block-based calculation
         channel_start = _calculate_auto_channel_start(
@@ -159,6 +163,10 @@ def get_next_channel_number(
                 used_set.add(int(float(row["channel_number"])))
             except (ValueError, TypeError):
                 pass  # Skip invalid channel numbers
+
+    # Include external Dispatcharr channels to prevent collisions (#146)
+    if external_occupied:
+        used_set |= external_occupied
 
     # Find the first available number starting from channel_start
     next_num = channel_start
@@ -230,13 +238,21 @@ def _get_all_auto_used_channels(conn: Connection) -> set[int]:
     return used_set
 
 
-def get_next_compact_channel_number(conn: Connection) -> int | None:
+def get_next_compact_channel_number(
+    conn: Connection,
+    external_occupied: set[int] | None = None,
+) -> int | None:
     """Get the next available channel number in strict_compact mode.
 
     Finds the first unused channel number starting from range_start,
-    considering ALL channels across ALL enabled AUTO groups.
+    considering ALL channels across ALL enabled AUTO groups and
+    external Dispatcharr channels.
 
     This is the core allocation function for strict_compact mode.
+
+    Args:
+        conn: Database connection
+        external_occupied: Channel numbers occupied by non-Teamarr channels (#146)
 
     Returns:
         Next available channel number, or None if range exhausted
@@ -246,6 +262,10 @@ def get_next_compact_channel_number(conn: Connection) -> int | None:
 
     # Get all used channels across all AUTO groups
     used_set = _get_all_auto_used_channels(conn)
+
+    # Include external Dispatcharr channels to prevent collisions (#146)
+    if external_occupied:
+        used_set |= external_occupied
 
     # Find first available starting from range_start
     next_num = range_start
@@ -689,6 +709,7 @@ def reassign_out_of_range_channel(
     group_id: int,
     channel_id: int,
     current_number: int,
+    external_occupied: set[int] | None = None,
 ) -> int | None:
     """Reassign a channel that's out of range.
 
@@ -697,11 +718,12 @@ def reassign_out_of_range_channel(
         group_id: The event group ID
         channel_id: The managed channel ID
         current_number: Current channel number (for logging)
+        external_occupied: Channel numbers occupied by non-Teamarr channels (#146)
 
     Returns:
         New channel number if reassigned, None if failed
     """
-    new_number = get_next_channel_number(conn, group_id)
+    new_number = get_next_channel_number(conn, group_id, external_occupied=external_occupied)
     if not new_number:
         logger.warning(
             "[CHANNEL_NUM] Could not reassign channel %d - no available numbers", channel_id
@@ -872,7 +894,10 @@ def get_all_auto_channels_globally_sorted(conn: Connection) -> list[dict]:
     return sorted_channels
 
 
-def reassign_channels_globally(conn: Connection) -> dict:
+def reassign_channels_globally(
+    conn: Connection,
+    external_occupied: set[int] | None = None,
+) -> dict:
     """Reassign channel numbers globally based on sort order.
 
     Used when switching to strict_compact with global sorting, or when
@@ -880,15 +905,20 @@ def reassign_channels_globally(conn: Connection) -> dict:
 
     This function:
     1. Gets all AUTO channels sorted globally
-    2. Assigns sequential numbers starting from range_start
+    2. Assigns sequential numbers starting from range_start, skipping external channels
     3. Updates channel_number in database
     4. Logs any drift (channels that changed numbers)
+
+    Args:
+        conn: Database connection
+        external_occupied: Channel numbers occupied by non-Teamarr channels (#146)
 
     Returns:
         Dict with statistics: channels_processed, channels_moved, drift_details
     """
     range_start, range_end = get_global_channel_range(conn)
     effective_end = range_end if range_end else MAX_CHANNEL
+    ext_set = external_occupied or set()
 
     # Get globally sorted channels
     sorted_channels = get_all_auto_channels_globally_sorted(conn)
@@ -901,8 +931,10 @@ def reassign_channels_globally(conn: Connection) -> dict:
     channels_moved = 0
     drift_details = []
 
-    # Assign sequential numbers
+    # Assign sequential numbers, skipping external Dispatcharr channels (#146)
     next_num = range_start
+    while next_num in ext_set:
+        next_num += 1
     for ch in sorted_channels:
         old_num = ch["channel_number"]
 
@@ -937,6 +969,9 @@ def reassign_channels_globally(conn: Connection) -> dict:
             )
 
         next_num += 1
+        # Skip external channels for next assignment (#146)
+        while next_num in ext_set:
+            next_num += 1
 
     logger.info(
         "[CHANNEL_SORT] Global reassign complete: %d channels processed, %d moved",

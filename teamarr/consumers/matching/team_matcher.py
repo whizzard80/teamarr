@@ -752,6 +752,53 @@ class TeamMatcher:
             parsed_team2=ctx.team2,
         )
 
+    def _check_abbreviation_match(
+        self,
+        team1: str | None,
+        team2: str | None,
+        event: Event,
+    ) -> tuple[MatchMethod, float] | None:
+        """Check if stream teams exactly match event team abbreviations as tokens.
+
+        Handles tournament-style streams where team codes appear as tokens:
+        "SWE" matches abbreviation "SWE", "ITA (M Group B)" contains token "ita"
+        matching "ITA".
+
+        Requires both abbreviations to be >= 3 chars to avoid matching 2-letter codes
+        (SF, NE, KC) that are more likely to appear as noise tokens.
+        """
+        home_abbr = (
+            normalize_text(event.home_team.abbreviation)
+            if event.home_team.abbreviation
+            else ""
+        )
+        away_abbr = (
+            normalize_text(event.away_team.abbreviation)
+            if event.away_team.abbreviation
+            else ""
+        )
+
+        if not home_abbr or not away_abbr or len(home_abbr) < 3 or len(away_abbr) < 3:
+            return None
+
+        t1_tokens = set(normalize_text(team1).split()) if team1 else set()
+        t2_tokens = set(normalize_text(team2).split()) if team2 else set()
+
+        # Both teams must match different event teams
+        if team1 and team2:
+            opt1 = home_abbr in t1_tokens and away_abbr in t2_tokens
+            opt2 = away_abbr in t1_tokens and home_abbr in t2_tokens
+            if opt1 or opt2:
+                return (MatchMethod.FUZZY, 100.0)
+        elif team1:
+            if home_abbr in t1_tokens or away_abbr in t1_tokens:
+                return (MatchMethod.FUZZY, 100.0)
+        elif team2:
+            if home_abbr in t2_tokens or away_abbr in t2_tokens:
+                return (MatchMethod.FUZZY, 100.0)
+
+        return None
+
     def _match_teams_to_event(
         self,
         team1: str | None,
@@ -765,9 +812,10 @@ class TeamMatcher:
         This prevents "Marist vs Sacred Heart" from matching "Jessup vs Sacred Heart"
         just because one team name overlaps.
 
-        Uses a two-stage approach:
-        1. First, try matching with team names as-is (preserves "Miami (OH)" etc.)
-        2. If no match, strip parentheticals and retry (handles "Team (Available outside...)")
+        Uses a three-stage approach:
+        1. Try exact abbreviation token match (handles tournament/international streams)
+        2. Try matching with team names as-is (preserves "Miami (OH)" etc.)
+        3. If no match, strip parentheticals and retry (handles "Team (Available outside...)")
 
         Args:
             team1: First extracted team name (normalized)
@@ -778,6 +826,11 @@ class TeamMatcher:
         Returns:
             Tuple of (method, confidence) if matched, None otherwise
         """
+        # Stage 0: Try exact abbreviation token match (tournament/international streams)
+        abbr_result = self._check_abbreviation_match(team1, team2, event)
+        if abbr_result:
+            return abbr_result
+
         # Stage 1: Try matching with original names
         result = self._score_teams_against_event(team1, team2, event)
         if result:

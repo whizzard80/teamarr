@@ -1665,9 +1665,11 @@ class EventGroupProcessor:
         Uses fingerprint cache - streams only need to be matched once
         unless stream name changes.
 
-        Important: We search ALL enabled leagues to find matches, but only
-        include events from the group's configured leagues. This allows
-        multi-sport groups to match any event while filtering output.
+        Matching scope depends on group_mode:
+        - single: search ONLY the group's configured league (exactly 1).
+          Avoids cross-sport confusion when a team exists in multiple leagues.
+        - multi: search ALL known leagues, filter output to configured leagues.
+          Allows multi-sport groups to match broadly.
 
         Args:
             streams: List of stream dicts
@@ -1677,11 +1679,6 @@ class EventGroupProcessor:
             status_callback: Optional callback(status_message) for status updates
             resolved_leagues: Pre-resolved leagues (for child groups inheriting from parent)
         """
-        # Get ALL known leagues from the cache to search against
-        # This includes all leagues discovered from ESPN/TSDB (287+), not just
-        # the 64 import-enabled leagues in the leagues table
-        search_leagues = self._get_all_known_leagues()
-
         # Load settings for event filtering
         with self._db_factory() as conn:
             row = conn.execute("SELECT include_final_events FROM settings WHERE id = 1").fetchone()
@@ -1692,12 +1689,20 @@ class EventGroupProcessor:
         # Use resolved_leagues if provided (e.g., inherited from parent), else group.leagues
         include_leagues = resolved_leagues if resolved_leagues else group.leagues
 
+        # Bifurcate search scope based on group_mode:
+        # - single: search only the configured league (exactly 1)
+        # - multi: search all known leagues (287+), filter to include_leagues in output
+        if group.group_mode == "single":
+            search_leagues = include_leagues
+        else:
+            search_leagues = self._get_all_known_leagues()
+
         matcher = StreamMatcher(
             service=self._service,
             db_factory=self._db_factory,
             group_id=group.id,
-            search_leagues=search_leagues,  # Search ALL leagues + group's leagues
-            include_leagues=include_leagues,  # Filter to resolved/configured leagues
+            search_leagues=search_leagues,
+            include_leagues=include_leagues,
             include_final_events=include_final_events,
             sport_durations=sport_durations,
             generation=getattr(self, "_generation", None),  # Use shared generation if set
@@ -2402,6 +2407,9 @@ class EventGroupProcessor:
             self._service,  # Required for template resolution
             self._dispatcharr_client,
         )
+
+        # Compute external channel numbers to avoid collisions (#146)
+        lifecycle_service.compute_external_occupied()
 
         # Build group config dict
         group_config = {

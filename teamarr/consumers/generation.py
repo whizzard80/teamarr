@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from teamarr.consumers.gold_zone import GoldZoneResult, process_gold_zone
+
 logger = logging.getLogger(__name__)
 
 # Global lock to prevent concurrent EPG generation runs
@@ -52,6 +54,7 @@ class GenerationResult:
     reconciliation: dict = field(default_factory=dict)
     cleanup: dict = field(default_factory=dict)
     logo_cleanup: dict = field(default_factory=dict)
+    channel_conflicts: dict = field(default_factory=dict)
 
     # For stats run tracking
     run_id: int | None = None
@@ -277,6 +280,24 @@ def run_full_generation(
                     msg = f"Finished {name} ({current}/{total}) [{elapsed:.1f}s]"
                 update_progress("groups", pct, msg, current, total, name)
 
+        # Compute external occupied channel numbers once for the entire run (#146)
+        # This prevents Teamarr from assigning numbers already used by non-Teamarr channels
+        from teamarr.consumers.lifecycle import compute_external_occupied
+        from teamarr.dispatcharr.factory import DispatcharrConnection as _DC
+
+        _channel_mgr = (
+            dispatcharr_client.channels
+            if isinstance(dispatcharr_client, _DC)
+            else None
+        )
+        external_occupied = compute_external_occupied(db_factory, _channel_mgr)
+
+        # Pre-generation validation: detect channel range conflicts (#146)
+        if external_occupied:
+            result.channel_conflicts = _validate_channel_ranges(
+                db_factory, external_occupied
+            )
+
         group_result = process_all_event_groups(
             db_factory=db_factory,
             dispatcharr_client=dispatcharr_client,
@@ -289,7 +310,10 @@ def run_full_generation(
         result.programmes_total = result.teams_programmes + result.groups_programmes
 
         # Step 3b: Global channel reassignment (if enabled)
-        _sync_global_channels(db_factory, dispatcharr_client, update_progress)
+        _sync_global_channels(
+            db_factory, dispatcharr_client, update_progress,
+            external_occupied=external_occupied,
+        )
 
         # Step 3b: Apply stream ordering rules to all channels (93-95%)
         update_progress("ordering", 93, "Applying stream ordering rules...")
@@ -301,7 +325,7 @@ def run_full_generation(
         gold_zone_result: GoldZoneResult | None = None
         if gold_zone_settings.enabled and dispatcharr_client:
             update_progress("gold_zone", 94, "Processing Gold Zone...")
-            gold_zone_result = _process_gold_zone(
+            gold_zone_result = process_gold_zone(
                 db_factory, dispatcharr_client, gold_zone_settings,
                 settings, update_progress,
             )
@@ -353,6 +377,8 @@ def run_full_generation(
             shared_service,
             dispatcharr_client=dispatcharr_client,
         )
+        # Compute external channel numbers to avoid collisions (#146)
+        lifecycle_service.compute_external_occupied()
 
         # Step 5: Dispatcharr EPG refresh + channel association (96-98%)
         if dispatcharr_client and dispatcharr_settings.epg_id:
@@ -510,10 +536,81 @@ def _refresh_m3u_accounts(db_factory: Callable[[], Any], dispatcharr_client: Any
     return result
 
 
+def _validate_channel_ranges(
+    db_factory: Callable[[], Any],
+    external_occupied: set[int],
+) -> dict:
+    """Validate channel ranges against external Dispatcharr channels.
+
+    Scans all event groups' channel ranges for overlap with external channels.
+    Returns conflict info for the generation result (#146).
+
+    Args:
+        db_factory: Factory function returning database connection
+        external_occupied: Channel numbers occupied by non-Teamarr channels
+
+    Returns:
+        Dict with external channel stats and per-group warnings
+    """
+    from teamarr.database.channel_numbers import get_group_channel_range
+
+    max_external = max(external_occupied) if external_occupied else 0
+    conflicts: dict = {
+        "external_channels_detected": len(external_occupied),
+        "max_external_channel": max_external,
+        "group_warnings": [],
+    }
+
+    with db_factory() as conn:
+        groups = conn.execute(
+            """SELECT id, name, channel_assignment_mode, channel_start_number
+               FROM event_epg_groups
+               WHERE enabled = 1 AND parent_group_id IS NULL"""
+        ).fetchall()
+
+        for group in groups:
+            range_start, range_end = get_group_channel_range(conn, group["id"])
+            if range_start is None:
+                continue
+
+            effective_end = range_end if range_end else range_start + 999
+            group_range = set(range(range_start, effective_end + 1))
+            collisions = external_occupied & group_range
+
+            if collisions:
+                available = len(group_range) - len(collisions)
+                warning = {
+                    "group_id": group["id"],
+                    "group_name": group["name"],
+                    "range": f"{range_start}-{effective_end}",
+                    "external_collisions": len(collisions),
+                    "available_slots": available,
+                }
+                conflicts["group_warnings"].append(warning)
+                logger.warning(
+                    "[CHANNEL_NUM] Group '%s' range %d-%d has %d external channel collisions "
+                    "(%d slots available)",
+                    group["name"],
+                    range_start,
+                    effective_end,
+                    len(collisions),
+                    available,
+                )
+
+    if not conflicts["group_warnings"]:
+        logger.info(
+            "[CHANNEL_NUM] No channel range conflicts with %d external channels",
+            len(external_occupied),
+        )
+
+    return conflicts
+
+
 def _sync_global_channels(
     db_factory: Callable[[], Any],
     dispatcharr_client: Any | None,
     update_progress: Callable,
+    external_occupied: set[int] | None = None,
 ) -> None:
     """Reassign channel numbers globally by sport/league priority if enabled."""
     from teamarr.database.channel_numbers import reassign_channels_globally
@@ -527,7 +624,7 @@ def _sync_global_channels(
 
     update_progress("groups", 94, "Reassigning channels globally by sport/league priority...")
     with db_factory() as conn:
-        global_result = reassign_channels_globally(conn)
+        global_result = reassign_channels_globally(conn, external_occupied=external_occupied)
         if global_result["channels_moved"] == 0:
             return
 
@@ -756,433 +853,3 @@ def _finalize_stats_run(
     with db_factory() as conn:
         save_run(conn, stats_run)
 
-
-# =============================================================================
-# GOLD ZONE (Olympics Special Feature)
-# =============================================================================
-
-# Match terms for Gold Zone streams (case-insensitive)
-_GOLD_ZONE_PATTERNS = ["gold zone", "goldzone", "gold-zone"]
-
-# External EPG source
-_GOLD_ZONE_EPG_URL = "https://epg.jesmann.com/TeamSports/goldzone.xml"
-
-# XMLTV identifiers (must match the external EPG)
-_GOLD_ZONE_TVG_ID = "GoldZone.us"
-_GOLD_ZONE_CHANNEL_NAME = "Gold Zone"
-_GOLD_ZONE_LOGO = "https://emby.tmsimg.com/assets/p32146358_b_h9_ab.jpg"
-
-
-@dataclass
-class GoldZoneResult:
-    """Result of Gold Zone processing."""
-
-    epg_xml: str | None = None
-    dispatcharr_channel_id: int | None = None
-
-
-def _process_gold_zone(
-    db_factory: Callable[[], Any],
-    dispatcharr_client: Any,
-    gold_zone_settings: Any,
-    epg_settings: Any,
-    update_progress: Callable,
-) -> GoldZoneResult | None:
-    """Process Gold Zone: find matching streams in event groups, create channel, fetch EPG.
-
-    Only searches streams within imported event groups (not all providers).
-    Excludes stale streams. Filters external EPG to the configured date window.
-
-    Args:
-        db_factory: Factory function returning database connection context manager
-        dispatcharr_client: Dispatcharr client for stream/channel operations
-        gold_zone_settings: GoldZoneSettings with enabled and channel_number
-        epg_settings: EPGSettings for date window (epg_output_days_ahead, epg_lookback_hours)
-        update_progress: Progress callback
-
-    Returns:
-        GoldZoneResult with EPG XML and channel ID, or None if nothing to do
-    """
-    import re
-
-    import httpx
-
-    from teamarr.database.channels import get_managed_channel_by_tvg_id
-    from teamarr.database.channels.crud import create_managed_channel, update_managed_channel
-    from teamarr.database.groups import get_all_groups
-
-    # Build combined regex pattern for Gold Zone keywords
-    pattern = re.compile("|".join(re.escape(p) for p in _GOLD_ZONE_PATTERNS), re.IGNORECASE)
-
-    # Get M3U group IDs from enabled event groups — only search streams
-    # in M3U groups that are configured as event groups
-    with db_factory() as conn:
-        groups = get_all_groups(conn, include_disabled=False)
-
-    m3u_group_ids = {g.m3u_group_id for g in groups if g.m3u_group_id is not None}
-    if not m3u_group_ids:
-        logger.info("[GOLD_ZONE] No event groups with M3U groups configured")
-        return None
-
-    # Fetch all streams once, filter by M3U group + keywords + stale
-    try:
-        all_streams = dispatcharr_client.m3u.list_streams()
-    except Exception as e:
-        logger.error("[GOLD_ZONE] Failed to fetch streams: %s", e)
-        return None
-
-    # Build M3U group → event group mapping for managed channel registration
-    m3u_to_event_group = {g.m3u_group_id: g.id for g in groups if g.m3u_group_id is not None}
-
-    matched_streams = []
-    first_event_group_id: int | None = None
-    skipped_date = 0
-    for s in all_streams:
-        if s.channel_group in m3u_group_ids and not s.is_stale and pattern.search(s.name):
-            # Date disambiguation: exclude streams with a non-today date in the name
-            date_ok, parsed_date = _gold_zone_stream_date_check(s.name)
-            if not date_ok:
-                skipped_date += 1
-                logger.debug(
-                    "[GOLD_ZONE] Skipping '%s' — date %s is not today", s.name, parsed_date
-                )
-                continue
-            matched_streams.append(s)
-            if first_event_group_id is None:
-                first_event_group_id = m3u_to_event_group.get(s.channel_group)
-
-    if skipped_date:
-        logger.info("[GOLD_ZONE] Skipped %d streams with non-today dates", skipped_date)
-
-    if not matched_streams:
-        logger.info(
-            "[GOLD_ZONE] No matching streams found across %d M3U groups",
-            len(m3u_group_ids),
-        )
-        return None
-
-    # Apply stream ordering rules (same priority system as regular channels)
-    gold_zone_stream_ids = _order_gold_zone_streams(
-        matched_streams, m3u_to_event_group, db_factory,
-    )
-
-    logger.info(
-        "[GOLD_ZONE] Found %d matching streams (non-stale) across %d M3U groups",
-        len(gold_zone_stream_ids), len(m3u_group_ids),
-    )
-
-    # Create or update the Gold Zone channel in Dispatcharr
-    channel_number = gold_zone_settings.channel_number or 999
-    channel_group_id = gold_zone_settings.channel_group_id
-    stream_profile_id = gold_zone_settings.stream_profile_id
-
-    # Convert profile IDs: null = all profiles → [0] sentinel for Dispatcharr
-    profile_ids = gold_zone_settings.channel_profile_ids
-    if profile_ids is None:
-        disp_profile_ids = [0]  # All profiles
-    else:
-        disp_profile_ids = [int(p) for p in profile_ids if not isinstance(p, str)]
-
-    dispatcharr_channel_id: int | None = None
-
-    try:
-        channel_manager = dispatcharr_client.channels
-
-        # Check if channel already exists by tvg_id
-        existing = channel_manager.find_by_tvg_id(_GOLD_ZONE_TVG_ID)
-        if existing:
-            dispatcharr_channel_id = existing.id
-            # Update existing channel with current streams + settings
-            update_data: dict = {
-                "name": _GOLD_ZONE_CHANNEL_NAME,
-                "channel_number": channel_number,
-                "streams": gold_zone_stream_ids,
-                "tvg_id": _GOLD_ZONE_TVG_ID,
-            }
-            if channel_group_id is not None:
-                update_data["channel_group_id"] = channel_group_id
-            if disp_profile_ids:
-                update_data["channel_profile_ids"] = disp_profile_ids
-            if stream_profile_id is not None:
-                update_data["stream_profile_id"] = stream_profile_id
-
-            channel_manager.update_channel(existing.id, data=update_data)
-            logger.info(
-                "[GOLD_ZONE] Updated channel %d with %d streams",
-                existing.id,
-                len(gold_zone_stream_ids),
-            )
-        else:
-            # Upload logo
-            logo_id = None
-            try:
-                logo_id = dispatcharr_client.logos.upload_or_find(
-                    _GOLD_ZONE_CHANNEL_NAME, _GOLD_ZONE_LOGO
-                )
-            except Exception as e:
-                logger.warning("[GOLD_ZONE] Failed to upload logo: %s", e)
-
-            # Create new channel
-            create_result = channel_manager.create_channel(
-                name=_GOLD_ZONE_CHANNEL_NAME,
-                channel_number=channel_number,
-                stream_ids=gold_zone_stream_ids,
-                tvg_id=_GOLD_ZONE_TVG_ID,
-                logo_id=logo_id,
-                channel_group_id=channel_group_id,
-                channel_profile_ids=disp_profile_ids or None,
-                stream_profile_id=stream_profile_id,
-            )
-            if create_result.success:
-                dispatcharr_channel_id = (create_result.data or {}).get("id")
-                logger.info(
-                    "[GOLD_ZONE] Created channel %s with %d streams",
-                    dispatcharr_channel_id,
-                    len(gold_zone_stream_ids),
-                )
-            else:
-                logger.error("[GOLD_ZONE] Failed to create channel: %s", create_result.error)
-    except Exception as e:
-        logger.error("[GOLD_ZONE] Channel operation failed: %s", e)
-
-    # Register as managed channel so standard EPG association picks it up
-    if dispatcharr_channel_id and first_event_group_id:
-        from teamarr.utilities.tz import now_user
-
-        # Default deletion to end of today (same-day lifecycle)
-        today_end = now_user().replace(hour=23, minute=59, second=59)
-        delete_at = today_end.isoformat()
-
-        mc_fields = {
-            "dispatcharr_channel_id": dispatcharr_channel_id,
-            "channel_name": _GOLD_ZONE_CHANNEL_NAME,
-            "channel_group_id": channel_group_id,
-            "channel_profile_ids": profile_ids or [],
-            "event_name": _GOLD_ZONE_CHANNEL_NAME,
-            "league": "Special - Winter Olympics",
-            "sync_status": "in_sync",
-            "scheduled_delete_at": delete_at,
-        }
-
-        try:
-            with db_factory() as conn:
-                existing_mc = get_managed_channel_by_tvg_id(conn, _GOLD_ZONE_TVG_ID)
-                if existing_mc:
-                    update_managed_channel(conn, existing_mc.id, mc_fields)
-                    logger.info("[GOLD_ZONE] Updated managed channel %d", existing_mc.id)
-                else:
-                    mc_id = create_managed_channel(
-                        conn=conn,
-                        event_epg_group_id=first_event_group_id,
-                        event_id="gold_zone",
-                        event_provider="system",
-                        tvg_id=_GOLD_ZONE_TVG_ID,
-                        channel_name=_GOLD_ZONE_CHANNEL_NAME,
-                        dispatcharr_channel_id=dispatcharr_channel_id,
-                        channel_group_id=channel_group_id,
-                        channel_profile_ids=profile_ids or [],
-                        logo_url=_GOLD_ZONE_LOGO,
-                        sport="olympics",
-                        event_name=_GOLD_ZONE_CHANNEL_NAME,
-                        league="Special - Winter Olympics",
-                        sync_status="in_sync",
-                        scheduled_delete_at=delete_at,
-                    )
-                    logger.info("[GOLD_ZONE] Created managed channel %d", mc_id)
-        except Exception as e:
-            logger.error("[GOLD_ZONE] Failed to register managed channel: %s", e)
-
-    gz_result = GoldZoneResult(dispatcharr_channel_id=dispatcharr_channel_id)
-
-    # Fetch external EPG XML and filter by date window
-    try:
-        response = httpx.get(_GOLD_ZONE_EPG_URL, timeout=30, follow_redirects=True)
-        response.raise_for_status()
-        raw_xml = response.text
-        logger.info("[GOLD_ZONE] Fetched external EPG (%d bytes)", len(raw_xml))
-    except Exception as e:
-        logger.error("[GOLD_ZONE] Failed to fetch external EPG: %s", e)
-        return gz_result  # Return with channel ID but no EPG
-
-    # Filter programmes to EPG date window
-    try:
-        gz_result.epg_xml = _filter_gold_zone_epg(raw_xml, epg_settings)
-    except Exception as e:
-        logger.error("[GOLD_ZONE] Failed to filter EPG: %s", e)
-        gz_result.epg_xml = raw_xml  # Fall back to unfiltered
-
-    return gz_result
-
-
-def _filter_gold_zone_epg(raw_xml: str, epg_settings: Any) -> str:
-    """Filter Gold Zone EPG to only include programmes within the EPG date window.
-
-    Programmes without datetime info are always included.
-    Programmes with datetime are filtered to the configured window
-    (epg_lookback_hours back, epg_output_days_ahead forward).
-
-    Args:
-        raw_xml: Raw XMLTV XML from external source
-        epg_settings: EPGSettings with epg_output_days_ahead and epg_lookback_hours
-
-    Returns:
-        Filtered XMLTV XML string
-    """
-    import xml.etree.ElementTree as ET
-    from datetime import UTC, datetime, timedelta
-
-    source = ET.fromstring(raw_xml)
-
-    now = datetime.now(UTC)
-    window_start = now - timedelta(hours=epg_settings.epg_lookback_hours)
-    window_end = now + timedelta(days=epg_settings.epg_output_days_ahead)
-
-    # Build filtered XML with same structure
-    root = ET.Element("tv")
-
-    # Copy channels as-is
-    for channel in source.findall("channel"):
-        root.append(channel)
-
-    # Filter programmes by date window
-    kept = 0
-    dropped = 0
-    for programme in source.findall("programme"):
-        start_str = programme.get("start", "")
-        if not start_str:
-            # No datetime — always include
-            root.append(programme)
-            kept += 1
-            continue
-
-        # Parse XMLTV datetime: "YYYYMMDDHHmmss +HHMM"
-        try:
-            prog_start = _parse_xmltv_datetime(start_str)
-        except ValueError:
-            # Can't parse — include to be safe
-            root.append(programme)
-            kept += 1
-            continue
-
-        if window_start <= prog_start <= window_end:
-            root.append(programme)
-            kept += 1
-        else:
-            dropped += 1
-
-    if dropped > 0:
-        logger.info("[GOLD_ZONE] EPG filtered: %d kept, %d outside date window", kept, dropped)
-
-    xml_str = ET.tostring(root, encoding="unicode")
-    return xml_str
-
-
-def _parse_xmltv_datetime(dt_str: str):
-    """Parse XMLTV datetime string like '20260207130000 +0000' to timezone-aware datetime."""
-    from datetime import datetime, timedelta, timezone
-
-    # Format: YYYYMMDDHHmmss +HHMM (or -HHMM)
-    dt_str = dt_str.strip()
-    if " " in dt_str:
-        time_part, tz_part = dt_str.rsplit(" ", 1)
-    else:
-        time_part = dt_str
-        tz_part = "+0000"
-
-    # Parse base datetime
-    dt = datetime.strptime(time_part, "%Y%m%d%H%M%S")
-
-    # Parse timezone offset
-    tz_sign = 1 if tz_part.startswith("+") else -1
-    tz_digits = tz_part.lstrip("+-")
-    tz_hours = int(tz_digits[:2])
-    tz_minutes = int(tz_digits[2:4]) if len(tz_digits) >= 4 else 0
-    tz_offset = timedelta(hours=tz_hours, minutes=tz_minutes) * tz_sign
-
-    return dt.replace(tzinfo=timezone(tz_offset))
-
-
-def _order_gold_zone_streams(
-    streams: list,
-    m3u_to_event_group: dict[int, int],
-    db_factory: Callable[[], Any],
-) -> list[int]:
-    """Apply stream ordering rules to Gold Zone streams.
-
-    Creates lightweight ManagedChannelStream adapters from DispatcharrStream
-    objects so the existing StreamOrderingService can sort them.
-
-    Args:
-        streams: Matched DispatcharrStream objects
-        m3u_to_event_group: Mapping of M3U group ID → event group ID
-        db_factory: Database connection factory
-
-    Returns:
-        Sorted list of Dispatcharr stream IDs
-    """
-    from teamarr.database.channels.types import ManagedChannelStream
-    from teamarr.database.settings import get_stream_ordering_settings
-    from teamarr.services.stream_ordering import StreamOrderingService
-
-    with db_factory() as conn:
-        ordering_settings = get_stream_ordering_settings(conn)
-
-    if not ordering_settings.rules:
-        return [s.id for s in streams]
-
-    # Build adapters so StreamOrderingService can evaluate its rules
-    adapters: list[ManagedChannelStream] = []
-    for s in streams:
-        event_group_id = m3u_to_event_group.get(s.channel_group)
-        adapters.append(ManagedChannelStream(
-            id=0,
-            managed_channel_id=0,
-            dispatcharr_stream_id=s.id,
-            stream_name=s.name,
-            source_group_id=event_group_id,
-            m3u_account_id=s.m3u_account_id,
-            m3u_account_name=s.m3u_account_name,
-        ))
-
-    with db_factory() as conn:
-        service = StreamOrderingService(rules=ordering_settings.rules, conn=conn)
-        sorted_adapters = service.sort_streams(adapters)
-
-    sorted_ids = [a.dispatcharr_stream_id for a in sorted_adapters]
-
-    if sorted_ids != [s.id for s in streams]:
-        logger.info(
-            "[GOLD_ZONE] Reordered %d streams by %d ordering rules",
-            len(sorted_ids), len(ordering_settings.rules),
-        )
-
-    return sorted_ids
-
-
-def _gold_zone_stream_date_check(stream_name: str) -> tuple[bool, str | None]:
-    """Check if a Gold Zone stream name contains a date, and if so whether it's today.
-
-    Reuses the normalizer's extract_and_mask_datetime which already handles:
-    YYYY-MM-DD, MM/DD/YYYY, MM/DD, "Feb 9", "9 Feb", etc.
-
-    Logic:
-    - No date found → include (True, None)
-    - Date matches today (user tz) → include (True, date_str)
-    - Date does NOT match today → exclude (False, date_str)
-
-    Returns:
-        (is_ok, parsed_date_str) — is_ok=True means include the stream
-    """
-    from teamarr.consumers.matching.normalizer import extract_and_mask_datetime
-    from teamarr.utilities.tz import now_user
-
-    _, extracted_date, _, _ = extract_and_mask_datetime(stream_name)
-
-    if extracted_date is None:
-        return True, None
-
-    today = now_user().date()
-    date_str = extracted_date.isoformat()
-    if extracted_date.month == today.month and extracted_date.day == today.day:
-        return True, date_str
-    return False, date_str

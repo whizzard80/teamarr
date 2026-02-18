@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS settings (
     gold_zone_stream_profile_id INTEGER,
 
     -- Schema Version
-    schema_version INTEGER DEFAULT 56
+    schema_version INTEGER DEFAULT 57
 );
 
 -- Insert default settings

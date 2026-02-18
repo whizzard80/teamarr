@@ -797,6 +797,12 @@ def create_group(request: GroupCreate):
         custom_regex_date_enabled=group.custom_regex_date_enabled,
         custom_regex_time=group.custom_regex_time,
         custom_regex_time_enabled=group.custom_regex_time_enabled,
+        custom_regex_league=group.custom_regex_league,
+        custom_regex_league_enabled=group.custom_regex_league_enabled,
+        custom_regex_fighters=group.custom_regex_fighters,
+        custom_regex_fighters_enabled=group.custom_regex_fighters_enabled,
+        custom_regex_event_name=group.custom_regex_event_name,
+        custom_regex_event_name_enabled=group.custom_regex_event_name_enabled,
         skip_builtin_filter=group.skip_builtin_filter,
         include_teams=[TeamFilterEntry(**t) for t in group.include_teams]
         if group.include_teams
@@ -1210,6 +1216,12 @@ def get_group_by_id(group_id: int):
         custom_regex_date_enabled=group.custom_regex_date_enabled,
         custom_regex_time=group.custom_regex_time,
         custom_regex_time_enabled=group.custom_regex_time_enabled,
+        custom_regex_league=group.custom_regex_league,
+        custom_regex_league_enabled=group.custom_regex_league_enabled,
+        custom_regex_fighters=group.custom_regex_fighters,
+        custom_regex_fighters_enabled=group.custom_regex_fighters_enabled,
+        custom_regex_event_name=group.custom_regex_event_name,
+        custom_regex_event_name_enabled=group.custom_regex_event_name_enabled,
         skip_builtin_filter=group.skip_builtin_filter,
         include_teams=[TeamFilterEntry(**t) for t in group.include_teams]
         if group.include_teams
@@ -1417,6 +1429,12 @@ def update_group_by_id(group_id: int, request: GroupUpdate):
         custom_regex_date_enabled=group.custom_regex_date_enabled,
         custom_regex_time=group.custom_regex_time,
         custom_regex_time_enabled=group.custom_regex_time_enabled,
+        custom_regex_league=group.custom_regex_league,
+        custom_regex_league_enabled=group.custom_regex_league_enabled,
+        custom_regex_fighters=group.custom_regex_fighters,
+        custom_regex_fighters_enabled=group.custom_regex_fighters_enabled,
+        custom_regex_event_name=group.custom_regex_event_name,
+        custom_regex_event_name_enabled=group.custom_regex_event_name_enabled,
         skip_builtin_filter=group.skip_builtin_filter,
         include_teams=[TeamFilterEntry(**t) for t in group.include_teams]
         if group.include_teams

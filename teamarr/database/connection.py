@@ -718,6 +718,22 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         logger.info("[MIGRATE] Schema upgraded to version 56 (gold zone profiles)")
         current_version = 56
 
+    # v57: Re-apply v52 columns for databases affected by PR #142 merge
+    # PR #142 (backup feature) was branched before v52 existed. When merged,
+    # it deleted the v52 migration but still advanced schema_version past 52,
+    # so the restored v52 migration was skipped on affected databases.
+    # This idempotently adds the columns that v52 should have created.
+    if current_version < 57:
+        _add_column_if_not_exists(
+            conn, "settings", "default_bypass_filter_for_playoffs", "BOOLEAN DEFAULT 0"
+        )
+        _add_column_if_not_exists(
+            conn, "event_epg_groups", "bypass_filter_for_playoffs", "BOOLEAN"
+        )
+        conn.execute("UPDATE settings SET schema_version = 57 WHERE id = 1")
+        logger.info("[MIGRATE] Schema upgraded to version 57 (re-apply v52 playoff bypass columns)")
+        current_version = 57
+
 
 # =============================================================================
 # LEGACY MIGRATION HELPER FUNCTIONS

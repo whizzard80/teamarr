@@ -158,8 +158,31 @@ class ChannelLifecycleService:
         self._context_builder = ContextBuilder(sports_service)
         self._resolver = TemplateResolver()
 
+        # External channel numbers from Dispatcharr (non-Teamarr channels)
+        # Computed lazily via compute_external_occupied() and cached for the run
+        self._external_occupied: set[int] | None = None
+
         # Dynamic group/profile resolver
         self._dynamic_resolver = DynamicResolver()
+
+    def compute_external_occupied(self) -> set[int]:
+        """Compute channel numbers in Dispatcharr NOT managed by Teamarr.
+
+        Delegates to the standalone compute_external_occupied() function.
+        Result is cached on the service instance for the duration of the run.
+
+        Returns:
+            Set of channel numbers occupied by non-Teamarr channels.
+        """
+        if self._external_occupied is not None:
+            return self._external_occupied
+
+        from teamarr.consumers.lifecycle import (
+            compute_external_occupied as _compute,
+        )
+
+        self._external_occupied = _compute(self._db_factory, self._channel_manager)
+        return self._external_occupied
 
     @property
     def dispatcharr_enabled(self) -> bool:
@@ -1390,7 +1413,8 @@ class ChannelLifecycleService:
         """Get next available channel number for a group.
 
         Uses the channel_numbers module for AUTO/MANUAL mode support
-        with range validation and 10-block intervals.
+        with range validation and 10-block intervals. Passes external
+        Dispatcharr channel numbers to avoid collisions (#146).
 
         Args:
             conn: Database connection
@@ -1402,7 +1426,10 @@ class ChannelLifecycleService:
         """
         from teamarr.database.channel_numbers import get_next_channel_number
 
-        next_num = get_next_channel_number(conn, group_id, auto_assign=True)
+        next_num = get_next_channel_number(
+            conn, group_id, auto_assign=True,
+            external_occupied=self._external_occupied,
+        )
         if next_num is None:
             logger.warning("[LIFECYCLE] Could not allocate channel number for group %d", group_id)
             return None
@@ -2306,8 +2333,11 @@ class ChannelLifecycleService:
                     key=lambda c: int(float(c.channel_number)) if c.channel_number else 9999,
                 )
 
-                # Reassign to compact range
+                # Reassign to compact range, skipping external channels (#146)
+                ext_set = self._external_occupied or set()
                 next_number = range_start
+                while next_number in ext_set:
+                    next_number += 1
                 for channel in sorted_channels:
                     current_number = (
                         int(float(channel.channel_number)) if channel.channel_number else None
@@ -2322,6 +2352,8 @@ class ChannelLifecycleService:
                             }
                         )
                         next_number += 1
+                        while next_number in ext_set:
+                            next_number += 1
                         continue
 
                     # Check for overflow
@@ -2365,6 +2397,8 @@ class ChannelLifecycleService:
                     )
 
                     next_number += 1
+                    while next_number in ext_set:
+                        next_number += 1
 
         except Exception as e:
             logger.exception(f"Error reassigning channels for group {group_id}")
@@ -2452,6 +2486,8 @@ class ChannelLifecycleService:
                     current_start = group_end + 1
 
                 # Process each group and reassign channels if needed
+                # Skip external Dispatcharr channels during reassignment (#146)
+                ext_set = self._external_occupied or set()
                 for grp_range in group_ranges:
                     group_id = grp_range["id"]
                     ideal_start = grp_range["ideal_start"]
@@ -2466,8 +2502,10 @@ class ChannelLifecycleService:
                         key=lambda c: int(float(c.channel_number)) if c.channel_number else 9999,
                     )
 
-                    # Reassign to ideal range
+                    # Reassign to ideal range, skipping external channels
                     next_number = ideal_start
+                    while next_number in ext_set:
+                        next_number += 1
                     for channel in sorted_channels:
                         current_num = (
                             int(float(channel.channel_number)) if channel.channel_number else None
@@ -2475,6 +2513,8 @@ class ChannelLifecycleService:
 
                         if current_num == next_number:
                             next_number += 1
+                            while next_number in ext_set:
+                                next_number += 1
                             continue
 
                         # Need to reassign
@@ -2497,6 +2537,8 @@ class ChannelLifecycleService:
 
                         result["channels_reassigned"] += 1
                         next_number += 1
+                        while next_number in ext_set:
+                            next_number += 1
 
                     result["groups_processed"] += 1
 
